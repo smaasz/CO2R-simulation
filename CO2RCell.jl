@@ -31,7 +31,8 @@ def get_thermal_correction_ideal_gas(T, frequencies, symmetrynumber, geometry, s
 """
 
 function main(;nref=0,
-              voltages=(-1.5:0.1:-0.6)*ufac"V",
+              voltages=(-1.5:0.1:-0.0)*ufac"V",
+              allow_surfacereactions = true,
               molarities=[0.001,0.01,0.1,1],
               scheme=:μex,
               xmax=1,
@@ -55,7 +56,7 @@ function main(;nref=0,
 
     kwargs=merge(defaults, kwargs) 
 
-    hmin=1.0e-1*ufac"μm"*2.0^(-nref)
+    hmin=1.0e-6*ufac"μm"*2.0^(-nref)
     hmax=1.0*ufac"μm"*2.0^(-nref)
     L=80.0 * ufac"μm"
     X=geomspace(0,L,hmin,hmax)
@@ -171,150 +172,214 @@ function main(;nref=0,
     function halfcellbc(f,u::VoronoiFVM.BNodeUnknowns{Tval, Tv, Tc, Tp, Ti}, bnode,data) where {Tval, Tv, Tc, Tp, Ti}
         (;nc,na,Γ_we,Γ_bulk,ϕ_we,ip,iϕ,v,v0,T, RT, ε)=data
 
-        bulkbcondition(f,u,bnode,data;region=Γ_bulk)
-
+        bulkbcondition(f, u, bnode, data; region=Γ_bulk)
+        boundary_dirichlet!(f, u, bnode; species=iϕ, region=Γ_we, value=ϕ_we*0.18)
 
         if bnode.region==Γ_we
-
-            #boundary_dirichlet!(f,u,bnode;species=iϕ,region=Γ_we,value=ϕ_we)
             
             # Robin b.c. for the Poisson equation
 
-            boundary_robin!(f, u, bnode, iϕ, C_gap / ε, C_gap * (ϕ_we - ϕ_pzc) / ε)
+            #boundary_robin!(f, u, bnode, iϕ, Γ_we, C_gap / ε, C_gap * (ϕ_we - ϕ_pzc) / ε)
 
-            # compute corrections due to surface charge densities
-            electro_corrections = Dict(zip(keys(E_f), zeros(Tval, length(E_f))))
+            if allow_surfacereactions
 
-            ## simple_electrochemical
-            #electro_corrections["ele_g"] -= (ϕ_we - (ϕ_we - u[iϕ])) * eV
-            electro_corrections["ele_g"] -= ϕ_we * eV
-            #electro_corrections["COOH-H2O-ele_t"] += (-u[iϕ] + 0.5 * (u[iϕ] - ϕ_pzc)) * eV
-            electro_corrections["COOH-H2O-ele_t"] += (-ϕ_we + 0.5 * ϕ_we) * eV
+                # compute corrections due to surface charge densities
+                electro_corrections = Dict(zip(keys(E_f), zeros(Tval, length(E_f))))
 
-            ## hbond_electrochemical
-            electro_corrections["COOH*_t"] += -0.25 * eV
-            electro_corrections["CO2*_t"] += 0.0 * eV
-            electro_corrections["CO*_t"] += -0.1 * eV
+                ## simple_electrochemical
+                #electro_corrections["ele_g"] -= (ϕ_we - (ϕ_we - u[iϕ])) * eV
+                electro_corrections["ele_g"] -= ϕ_we * eV
+                #electro_corrections["COOH-H2O-ele_t"] += (-u[iϕ] + 0.5 * (u[iϕ] - ϕ_pzc)) * eV
+                electro_corrections["COOH-H2O-ele_t"] += (-ϕ_we + 0.5 * ϕ_we) * eV
 
-            ## hbond_surface_charge_density
-            sigma = C_gap * (ϕ_we - u[iϕ] - ϕ_pzc)
-            #sigma = C_gap *(ϕ_we - ϕ_pzc)
-            for sp in surface_species
-                electro_corrections[sp] += electro_correction_params[sp]' * [sigma^2, sigma] * eV
+                ## hbond_electrochemical
+                electro_corrections["COOH*_t"] += -0.25 * eV
+                electro_corrections["CO2*_t"] += 0.0 * eV
+                electro_corrections["CO*_t"] += -0.1 * eV
+
+                ## hbond_surface_charge_density
+                sigma = C_gap * (ϕ_we - u[iϕ] - ϕ_pzc)
+                #sigma = C_gap *(ϕ_we - ϕ_pzc)
+                for sp in surface_species
+                    electro_corrections[sp] += electro_correction_params[sp]' * [sigma^2, sigma] * eV
+                end
+
+
+                G_f = Dict(zip([bulk_species; surface_species; transition_state], zeros(Tval, nc + na + length(transition_state))))
+                for sp in [bulk_species; surface_species; transition_state]
+                    G_f[sp] += E_f[sp] + thermo_corrections[sp] + electro_corrections[sp]
+                end
+
+
+                # rate constants
+                G_IS = zeros(Tval, 4)
+                G_FS = zeros(Tval,4)
+                G_TS = zeros(Tval, 4)
+
+                kf = zeros(Tval, 4)
+                kr = zeros(Tval, 4)
+
+                # 'CO2_g + 2*_t <-> CO2*_t',	                  #1
+                G_IS[1] = G_f["CO2_g"] + 2 * 0.0
+                G_FS[1] = G_f["CO2*_t"]
+                G_TS[1] = max(G_IS[1], G_FS[1])
+
+                kf[1] = 1.0e13 * exp(-(G_TS[1] - G_IS[1]) / (k_B * T))
+                kr[1] = 1.0e13 * exp(-(G_TS[1] - G_FS[1]) / (k_B * T))
+
+                # 'CO2*_t + H2O_g + ele_g <-> COOH*_t + OH_g',  #2            
+                G_IS[2] = G_f["CO2*_t"] + G_f["H2O_g"] + G_f["ele_g"]
+                G_FS[2] = G_f["COOH*_t"] + G_f["OH_g"]
+                G_TS[2] = max(G_IS[2], G_FS[2])
+
+                kf[2] = 1.0e13 * exp(-(G_TS[2] - G_IS[2]) / (k_B * T))
+                kr[2] = 1.0e13 * exp(-(G_TS[2] - G_FS[2]) / (k_B * T))
+
+                # 'COOH*_t + H2O_g + ele_g <-> COOH-H2O-ele_t <-> CO*_t + H2O_g + OH_g + *_t; beta=0.5', #3
+                G_IS[3] = G_f["COOH*_t"] + G_f["H2O_g"] + G_f["ele_g"]
+                G_FS[3] = G_f["CO*_t"] + G_f["H2O_g"] + G_f["OH_g"] + 0.0
+                G_TS[3] = G_f["COOH-H2O-ele_t"]
+
+                kf[3] = 1.0e13 * exp(-(G_TS[3] - G_IS[3]) / (k_B * T))
+                kr[3] = 1.0e13 * exp(-(G_TS[3] - G_FS[3]) / (k_B * T))
+
+                # 'CO*_t <-> CO_g + *_t',	                      #4
+                G_IS[4] = G_f["CO*_t"]
+                G_FS[4] = G_f["CO_g"] + 0.0
+                G_TS[4] = max(G_IS[4], G_FS[4])
+
+                kf[4] = 1.0e8 * exp(-(G_TS[4] - G_IS[4]) / (k_B * T))
+                kr[4] = 1.0e8 * exp(-(G_TS[4] - G_FS[4]) / (k_B * T))
+
+                # rates
+                # 'CO2_g + 2*_t <-> CO2*_t',	                  #1
+                # 'CO2*_t + H2O_g + ele_g <-> COOH*_t + OH_g',  #2
+                # 'COOH*_t + H2O_g + ele_g <-> COOH-H2O-ele_t <-> CO*_t + H2O_g + OH_g + *_t; beta=0.5', #3
+                # 'CO*_t <-> CO_g + *_t',	                      #4
+                S       = 9.61e-5 / N_A * (1.0e10)^2 * ufac"mol/m^2"
+                θ_free  = (1- u[ico2_ad] - u[ico_ad] - u[icooh_ad])
+
+                rates = zeros(Tval, 4)
+
+                rates[1] = kf[1] * (u[ico2] / Hcp_CO2 / bar) * θ_free^2 - kr[1] * (u[ico2_ad] )
+                rates[2] = kf[2] * (u[ico2_ad] ) * 1.0 * 1.0 - kr[2] * (u[icooh_ad] ) * (u[iohminus])
+                rates[3] = kf[3] * (u[icooh_ad] ) * 1.0 * 1.0 - kr[3] * (u[ico_ad] ) * 1.0 * (u[iohminus]) * θ_free
+                rates[4] = kf[4] * (u[ico_ad] )  - kr[4] * (u[ico] / Hcp_CO / bar) * θ_free
+
+                #println("rate constants: $(ForwardDiff.value.(kf)) and $(ForwardDiff.value.(kr))")
+                println("rates: $(ForwardDiff.value.(rates))")
+
+                # bulk species
+                f[ico]      += -rates[4] * S
+                f[ico2]     += rates[1] * S
+                f[iohminus] += -rates[2] * S - rates[3] * S
+                
+                # surface species
+                f[ico2_ad]  += -rates[1] + rates[2]
+                f[ico_ad]   += -rates[3] + rates[4]
+                f[icooh_ad] += -rates[2] + rates[3]
             end
-
-
-            G_f = Dict(zip([bulk_species; surface_species; transition_state], zeros(Tval, nc + na + length(transition_state))))
-            for sp in [bulk_species; surface_species; transition_state]
-                G_f[sp] += E_f[sp] + thermo_corrections[sp] + electro_corrections[sp]
-            end
-
-
-            # rate constants
-            G_IS = zeros(Tval, 4)
-            G_FS = zeros(Tval,4)
-            G_TS = zeros(Tval, 4)
-
-            kf = zeros(Tval, 4)
-            kr = zeros(Tval, 4)
-
-            # 'CO2_g + 2*_t <-> CO2*_t',	                  #1
-            G_IS[1] = G_f["CO2_g"] + 2 * 0.0
-            G_FS[1] = G_f["CO2*_t"]
-            G_TS[1] = max(G_IS[1], G_FS[1])
-
-            kf[1] = 1.0e13 * exp(-(G_TS[1] - G_IS[1]) / (k_B * T))
-            kr[1] = 1.0e13 * exp(-(G_TS[1] - G_FS[1]) / (k_B * T))
-
-            # 'CO2*_t + H2O_g + ele_g <-> COOH*_t + OH_g',  #2            
-            G_IS[2] = G_f["CO2*_t"] + G_f["H2O_g"] + G_f["ele_g"]
-            G_FS[2] = G_f["COOH*_t"] + G_f["OH_g"]
-            G_TS[2] = max(G_IS[2], G_FS[2])
-
-            kf[2] = 1.0e13 * exp(-(G_TS[2] - G_IS[2]) / (k_B * T))
-            kr[2] = 1.0e13 * exp(-(G_TS[2] - G_FS[2]) / (k_B * T))
-
-            # 'COOH*_t + H2O_g + ele_g <-> COOH-H2O-ele_t <-> CO*_t + H2O_g + OH_g + *_t; beta=0.5', #3
-            G_IS[3] = G_f["COOH*_t"] + G_f["H2O_g"] + G_f["ele_g"]
-            G_FS[3] = G_f["CO*_t"] + G_f["H2O_g"] + G_f["OH_g"] + 0.0
-            G_TS[3] = G_f["COOH-H2O-ele_t"]
-
-            kf[3] = 1.0e13 * exp(-(G_TS[3] - G_IS[3]) / (k_B * T))
-            kr[3] = 1.0e13 * exp(-(G_TS[3] - G_FS[3]) / (k_B * T))
-
-            # 'CO*_t <-> CO_g + *_t',	                      #4
-            G_IS[4] = G_f["CO*_t"]
-            G_FS[4] = G_f["CO_g"] + 0.0
-            G_TS[4] = max(G_IS[4], G_FS[4])
-
-            kf[4] = 1.0e8 * exp(-(G_TS[4] - G_IS[4]) / (k_B * T))
-            kr[4] = 1.0e8 * exp(-(G_TS[4] - G_FS[4]) / (k_B * T))
-
-            # rates
-            # 'CO2_g + 2*_t <-> CO2*_t',	                  #1
-            # 'CO2*_t + H2O_g + ele_g <-> COOH*_t + OH_g',  #2
-            # 'COOH*_t + H2O_g + ele_g <-> COOH-H2O-ele_t <-> CO*_t + H2O_g + OH_g + *_t; beta=0.5', #3
-            # 'CO*_t <-> CO_g + *_t',	                      #4
-            S       = 9.61e-5 / N_A * (1.0e10)^2 * ufac"mol/m^2"
-            θ_free  = (1- u[ico2_ad] - u[ico_ad] - u[icooh_ad])
-
-            rates = zeros(Tval, 4)
-
-            rates[1] = kf[1] * (u[ico2] / Hcp_CO2 / bar) * θ_free^2 - kr[1] * (u[ico2_ad] )
-            rates[2] = kf[2] * (u[ico2_ad] ) * 1.0 * 1.0 - kr[2] * (u[icooh_ad] ) * (u[iohminus])
-            rates[3] = kf[3] * (u[icooh_ad] ) * 1.0 * 1.0 - kr[3] * (u[ico_ad] ) * 1.0 * (u[iohminus]) * θ_free
-            rates[4] = kf[4] * (u[ico_ad] )  - kr[4] * (u[ico] / Hcp_CO / bar) * θ_free
-
-            #println("rate constants: $(ForwardDiff.value.(kf)) and $(ForwardDiff.value.(kr))")
-            println("rates: $(ForwardDiff.value.(rates))")
-
-            # bulk species
-            f[ico] += -rates[4] * S
-            f[ico2] += rates[1] * S
-            f[iohminus] += -rates[2] * S - rates[3] * S
-            
-            # surface species
-            f[ico2_ad] += -rates[1] + rates[2]
-            f[ico_ad] += -rates[3] + rates[4]
-            f[icooh_ad] += -rates[2] + rates[3]
 
         end
         nothing
     end
+
+    # buffer equations
+    ## in base
+    ## CO2 + OH- <=> HCO3-
+    kbe1 = 4.44e7 / (mol/dm^3)
+    kbf1 = 5.93e3 / (mol/dm^3) / ufac"s"
+    kbr1 = kbf1 / kbe1
+    ## HCO3- + OH- <=> CO3-- + H2O
+    kbe2 = 4.66e3 / (mol/dm^3)
+    kbf2 = 1.0e8 / (mol/dm^3) / ufac"s"
+    kbr2 = kbf2 / kbe2
+
+    ## in acid
+    ## CO2 + H20 <=> HCO3- + H+
+    kae1 = 4.44e-7 * (mol/dm^3)
+    kaf1 = 3.7e-2 / ufac"s"
+    kar1 = kaf1 / kae1
+    ## HCO3- <=> CO3-- + H+ 
+    kae2 = 4.66e-5 / (mol/dm^3)
+    kaf2 = 59.44e3 / (mol/dm^3) / ufac"s"
+    kar2 = kaf2 / kae2
+    ## autoprotolyse
+    kwe  = 1.0e-14 * (mol/dm^3)^2
+    kwf  = 2.4e-5 * (mol/dm^3) / ufac"s"
+    kwr  = kwf / kwe
     
+    function reaction(f, u::VoronoiFVM.NodeUnknowns{Tv, Tc, Tp, Ti}, node, data) where {Tv, Tc, Tp, Ti}  
+        # buffer reactions
+        rates       = zeros(Tv, 5)
+        ## in base
+        ## CO2 + OH- <=> HCO3-
+        rates[1]    = kbf1 * u[ico2] * u[iohminus]  - kbr1 * u[ihco3]  
+        ## HCO3- + OH- <=> CO3-- + H2O
+        rates[2]    = kbf2 * u[ihco3] * u[iohminus] - kbr2 * u[ico3]
+
+        ## in acid
+        ## CO2 + H20 <=> HCO3- + H+
+        rates[3]    = kaf1 * u[ico2] - kar1 * u[ihco3] * u[ihplus]  
+        ## HCO3- <=> CO3-- + H+ 
+        rates[4]    = kaf2 * u[ihco3] - kar2 * u[ico3] * u[ihplus]  
+
+        ## autoprotolyse
+        rates[5]    = kwf - kwr * u[ihplus] * u[iohminus]  
+
+        f[ihco3]    -= rates[1] - rates[2] + rates[3] - rates[4]
+        f[ico3]     -= rates[2] + rates[4]
+        f[ihplus]   -= rates[3] + rates[4] + rates[5]
+        f[iohminus] -= -rates[1] -rates[2] + rates[5]
+
+        #println("$(ForwardDiff.value.(u))")
+        #println("$(node.index): $(ForwardDiff.value.(f))")
+        nothing
+    end
     
-    celldata=ElectrolyteData(;nc=7,
-                             na=3,
-                             z=[1,-1,-2,0,0,-1,1],
-                             D=[1.957e-9, 1.185e-9, 0.923e-9, 1.91e-9, 2.23e-9, 5.273e-9, 9.310e-9] * ufac"m^2/s", # from Ringe paper
-                             T=T,
-                             eneutral=false,
-                             κ=fill(κ,7),
-                             Γ_we=1,
-                             Γ_bulk=2,
-                             scheme)
+    celldata=ElectrolyteData(;nc    = 7,
+                              na    = allow_surfacereactions ? 3 : 0,
+                              z     = [1, -1, -2, 0, 0, -1, 1],
+                              D     = [1.957e-9, 1.185e-9, 0.923e-9, 1.91e-9, 2.23e-9, 5.273e-9, 9.310e-9] * ufac"m^2/s", # from Ringe paper
+                              T     = T,
+                              eneutral=false,
+                              κ     = fill(κ,7),
+                              Γ_we  = 1,
+                              Γ_bulk=2,
+                              scheme)
 
     (;iϕ::Int,ip::Int)=celldata
     
-    celldata.c_bulk[ikplus]         = 0.1 * mol/dm^3
-    celldata.c_bulk[ihco3]          = (0.1 - 9.53936e-8) * mol/dm^3
-    celldata.c_bulk[ico3]           = 9.53936e-8 * mol/dm^3
+    celldata.c_bulk[ikplus]         = 0.0 * mol/dm^3
+    celldata.c_bulk[ihco3]          = 0.091 * mol/dm^3
+    celldata.c_bulk[ico3]           = 2.68e-5 * mol/dm^3
     celldata.c_bulk[ico2]           = 0.033 * mol/dm^3
     celldata.c_bulk[ico]            = 0.0 * mol/dm^3
     celldata.c_bulk[iohminus]       = 10^(pH - 14) * mol/dm^3
     celldata.c_bulk[ihplus]         = 10^(-pH) * mol/dm^3
 
-    @assert isapprox(celldata.c_bulk'*celldata.z,0, atol=1.0e-10)
+    celldata.c_bulk[ikplus]         = -celldata.c_bulk' * celldata.z
+
+    @assert isapprox(celldata.c_bulk' * celldata.z, 0, atol=1.0e-10)
     
-    cell=PNPSystem(grid;bcondition=halfcellbc,celldata)
+    cell        = PNPSystem(grid; bcondition=halfcellbc, reaction=reaction, celldata)
+    ivresult    = ivsweep(cell; voltages, store_solutions=true, kwargs...)
+
+    vis = GridVisualizer(; Plotter, layout=(1,2))
+
+    # current-voltage plot
+    currs = [j[iohminus] * F for j in ivresult.j_we]
+    scalarplot!(vis[1,1], ivresult.voltages, currs*ufac"cm^2/mA",color="red",markershape=:utriangle,markersize=7, markevery=10,label="PNP",clear=true,legend=:lt,xlabel="Δϕ/V",ylabel="I/(mA/cm^2)", yscale=:log)
     
-        
-    volts, currs, sols = ivsweep(cell; voltages, ispec=iohminus, kwargs...)
-    vis=GridVisualizer(;Plotter, layout=(1,1))
-    scalarplot!(vis[1,1], volts, currs*ufac"cm^2/mA",color="red",markershape=:utriangle,markersize=7, markevery=10,label="PNP",clear=true,legend=:lt,xlabel="Δϕ/V",ylabel="I/(mA/cm^2)", yscale=:log)
+    # spatial pH distribution for a given applied voltage
+    ϕ_we = -0.9
+    (~, idx) = findmin(abs, ivresult.voltages .- ϕ_we)
+    pHs = -log10.(ivresult.solutions[idx][ihplus, :] / (mol/dm^3))
+    scalarplot!(vis[1,2], cell.grid, pHs, xlabel="Distance from working electrode", ylabel="pH-Value", xscale=:log)
+
     #scalarplot!(vis[2,1], sigmas, energies, color="black",clear=true,xlabel="σ/(μC/cm^s)",ylabel="ΔE/eV")
     #scalarplot!(vis[2,1], ϕs, rs, xlimits=(-1.5,-0.6), yscale=:log, xlabel="Δϕ/V", ylabel="c(CO2)/M")
-    for (volt, curr) in zip(volts, currs)
+    for (volt, curr) in zip(ivresult.voltages, currs)
         println("$volt,$curr")
     end
     return reveal(vis)
