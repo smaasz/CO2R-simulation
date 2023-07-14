@@ -62,6 +62,7 @@ function main(;nref=0,
     # environment parameters
     T   = 273.15 + 25 * ufac"K"
     pH  = 6.8
+    S   = 9.61e-5 / N_A * (1.0e10)^2 * ufac"mol/m^2"
 
     # Henry constants
     Hcp_CO  = 9.7e-6 * ufac"mol/(m^3 * Pa)"
@@ -110,14 +111,7 @@ function main(;nref=0,
 
 
             sigma = C_gap / ufac"μF/cm^2" * (ϕ_we - u[iϕ] - ϕ_pzc)
-
-            println([ForwardDiff.value(kf(sigma)) for kf in catmap_data.rate_constant_fns[1][1]])
-
-            rates = catmap_data.compute_rates(catmap_data.rate_constant_fns[1], [u[ico2_ad], u[icooh_ad], u[ico_ad]], [u[ico2] / Hcp_CO2 / bar, u[ico] / Hcp_CO / bar, 1.0, 1.0, 1.0, 1.0], sigma)
-
-            println("$(ForwardDiff.value.(rates))")
-
-            S       = 9.61e-5 / N_A * (1.0e10)^2 * ufac"mol/m^2"
+            rates = catmap_data.compute_rates(catmap_data.rate_constant_fns[1], [u[ico2_ad], u[icooh_ad], u[ico_ad]], [u[ico2] / Hcp_CO2 / bar, u[ico] / Hcp_CO / bar, 1.0, 1.0, u[iohminus], 1.0], sigma)
 
             # bulk species
             f[ico] += -rates[4] * S

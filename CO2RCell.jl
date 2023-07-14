@@ -33,12 +33,10 @@ def get_thermal_correction_ideal_gas(T, frequencies, symmetrynumber, geometry, s
 function main(;nref=0,
               voltages=(-1.5:0.1:-0.0)*ufac"V",
               allow_surfacereactions = true,
-              molarities=[0.001,0.01,0.1,1],
               scheme=:μex,
               xmax=1,
               κ=10.0,
               Plotter=PyPlot,
-              new=false,
               kwargs...)
 
     @local_phconstants N_A e R ε_0 k_B
@@ -173,13 +171,12 @@ function main(;nref=0,
         (;nc,na,Γ_we,Γ_bulk,ϕ_we,ip,iϕ,v,v0,T, RT, ε)=data
 
         bulkbcondition(f, u, bnode, data; region=Γ_bulk)
-        boundary_dirichlet!(f, u, bnode; species=iϕ, region=Γ_we, value=ϕ_we*0.18)
+        #boundary_dirichlet!(f, u, bnode; species=iϕ, region=Γ_we, value=ϕ_we*0.18)
+
+        # Robin b.c. for the Poisson equation
+        boundary_robin!(f, u, bnode, iϕ, Γ_we, C_gap , C_gap * (ϕ_we - ϕ_pzc))
 
         if bnode.region==Γ_we
-            
-            # Robin b.c. for the Poisson equation
-
-            #boundary_robin!(f, u, bnode, iϕ, Γ_we, C_gap / ε, C_gap * (ϕ_we - ϕ_pzc) / ε)
 
             if allow_surfacereactions
 
@@ -267,7 +264,7 @@ function main(;nref=0,
                 rates[4] = kf[4] * (u[ico_ad] )  - kr[4] * (u[ico] / Hcp_CO / bar) * θ_free
 
                 #println("rate constants: $(ForwardDiff.value.(kf)) and $(ForwardDiff.value.(kr))")
-                println("rates: $(ForwardDiff.value.(rates))")
+                # println("rates: $(ForwardDiff.value.(rates))")
 
                 # bulk species
                 f[ico]      += -rates[4] * S
@@ -365,17 +362,17 @@ function main(;nref=0,
     cell        = PNPSystem(grid; bcondition=halfcellbc, reaction=reaction, celldata)
     ivresult    = ivsweep(cell; voltages, store_solutions=true, kwargs...)
 
-    vis = GridVisualizer(; Plotter, layout=(1,2))
+    vis = GridVisualizer(; Plotter, layout=(1,2), resolution = (1200, 400))
 
     # current-voltage plot
     currs = [j[iohminus] * F for j in ivresult.j_we]
-    scalarplot!(vis[1,1], ivresult.voltages, currs*ufac"cm^2/mA",color="red",markershape=:utriangle,markersize=7, markevery=10,label="PNP",clear=true,legend=:lt,xlabel="Δϕ/V",ylabel="I/(mA/cm^2)", yscale=:log)
+    scalarplot!(vis[1,1], ivresult.voltages[ivresult.voltages .< -0.6], currs[ivresult.voltages .< -0.6]*ufac"cm^2/mA",color="red",markershape=:utriangle,markersize=7, markevery=10,label="PNP",clear=true,legend=:lt,xlabel="Δϕ [V]",ylabel="I [mA/cm^2]", yscale=:log)
     
     # spatial pH distribution for a given applied voltage
     ϕ_we = -0.9
     (~, idx) = findmin(abs, ivresult.voltages .- ϕ_we)
     pHs = -log10.(ivresult.solutions[idx][ihplus, :] / (mol/dm^3))
-    scalarplot!(vis[1,2], cell.grid, pHs, xlabel="Distance from working electrode", ylabel="pH-Value", xscale=:log)
+    scalarplot!(vis[1,2], cell.grid, pHs, xlabel="Distance from working electrode [m]", ylabel="pH-Value", xscale=:log)
 
     #scalarplot!(vis[2,1], sigmas, energies, color="black",clear=true,xlabel="σ/(μC/cm^s)",ylabel="ΔE/eV")
     #scalarplot!(vis[2,1], ϕs, rs, xlimits=(-1.5,-0.6), yscale=:log, xlabel="Δϕ/V", ylabel="c(CO2)/M")
