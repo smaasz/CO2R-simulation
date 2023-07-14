@@ -31,6 +31,7 @@ begin
 	using InteractiveUtils
 	using PlutoUI
 	using ForwardDiff
+	using PlutoVista
 end;
 
 # ╔═╡ 0da68bd3-6821-4cc2-8591-8f89f47337f6
@@ -38,7 +39,7 @@ begin
 	ENV["PYCALL_JL_RUNTIME_PYTHON"] = Sys.which("python3")
 	ENV["PYTHON"] = Sys.which("python3")
 	using PyCall
-	Pkg.build("PyCall")
+	#Pkg.build("PyCall")
 end;
 
 # ╔═╡ 4b4dc09e-ad77-4a30-801e-53ae8bdfbc2a
@@ -412,12 +413,10 @@ function compute_rateconstants!(k, σ, ϕ_we)
 		G_f[sp] += E_f[sp] + thermo_corrections[sp] + electro_corrections[sp]
 	end
 
-
 	# rate constants
 	G_IS = zeros(Tval, 4)
 	G_FS = zeros(Tval,4)
 	G_TS = zeros(Tval, 4)
-
 
 
 	# 'CO2_g + 2*_t <-> CO2*_t',	                  #1
@@ -454,11 +453,11 @@ function compute_rateconstants!(k, σ, ϕ_we)
 end;
 
 # ╔═╡ eefa6514-77bd-4759-a986-5a0c132e1f6a
-function we_breactions(f, u, bnode, data)
+function we_breactions(f, u::VoronoiFVM.BNodeUnknowns{Tval, Tv, Tc, Tp, Ti}, bnode, data) where {Tval, Tv, Tc, Tp, Ti}
 	(; iϕ, ϕ_we) = data
 
 	
-	Tval = eltype(u)
+	#Tval = eltype(u)
 	kf = zeros(Tval, 4)
 	kr = zeros(Tval, 4)
 	σ = C_gap * (ϕ_we - u[iϕ] - ϕ_pzc)
@@ -476,7 +475,7 @@ function we_breactions(f, u, bnode, data)
 	rates[4] = kf[4] * u[ico_ad] - kr[4] * (u[ico] / Hcp_CO / bar) * θ_free
 	
 	#println("rate constants: $(ForwardDiff.value.(kf)) and $(ForwardDiff.value.(kr))")
-	println("rates: $(ForwardDiff.value.(rates))")
+	#println("rates: $(ForwardDiff.value.(rates)): $(eltype(rates))")
 	
 	# bulk species
 	f[ico]      += -rates[4] * S
@@ -567,20 +566,22 @@ function simulate_CO2R(; nref 		= 0,
 end;
 
 # ╔═╡ 474f5a0f-a574-4b28-b5ad-71db62fc99d6
-(cell, ivresult) = simulate_CO2R();
+(cell, ivresult) = simulate_CO2R(; κ = 4.0);
 
 # ╔═╡ ba055678-22cf-4ff5-a032-70c3c55686db
 md"""
 ## Visualization
 """
 
+# ╔═╡ f4ef9513-b18e-48cb-bd86-1dddbad8b561
+md"""
+Choose applied voltage: $(@bind ϕ_we_index PlutoUI.Slider(1:10:length(ivresult.voltages)))
+"""
+
 # ╔═╡ be6e227f-0cd4-4aa8-83ad-802bf2e3f7e6
 begin
-	vis = GridVisualizer(; Plotter = PyPlot, layout=(1,2), resolution = (1200, 400))	
-end
-
-# ╔═╡ 15038435-a74a-4bbb-a31e-0fdff1bdd694
-begin
+	vis = GridVisualizer(; Plotter = PlutoVista, layout=(1,2), resolution = (1200, 400))
+	
 	# current-voltage plot
     currs = [j[iohminus] * F for j in ivresult.j_we]
 	
@@ -599,20 +600,7 @@ begin
 			ylabel 		= "I [mA/cm^2]", 
 			yscale 		= :log
 		)
-end
-
-# ╔═╡ f4ef9513-b18e-48cb-bd86-1dddbad8b561
-md"""
-Choose applied voltage: $(@bind ϕ_we_index PlutoUI.Slider(1:10:length(ivresult.voltages)))
-"""
-
-# ╔═╡ 393bb858-2bd1-4731-ab7a-c6e480bca75e
-md"""
-Potential at working electrode = $(ivresult.voltages[ϕ_we_index]) 
-"""
-
-# ╔═╡ 2e47bc9c-b880-49f5-913b-8589b55c6087
-begin
+	
 	pHs 		= -log10.(ivresult.solutions[ϕ_we_index][ihplus, :] / (mol/dm^3))
     scalarplot!(
 		vis[1,2], 
@@ -621,10 +609,19 @@ begin
 		xlabel 	="Distance from working electrode [m]", 
 		ylabel 	="pH-Value", 
 		xscale 	= :log,
-		limits 	= (1, 14) 
 	)
-
+	
 	reveal(vis)
+end
+
+# ╔═╡ 393bb858-2bd1-4731-ab7a-c6e480bca75e
+md"""
+Potential at working electrode = $(ivresult.voltages[ϕ_we_index]) 
+"""
+
+# ╔═╡ 4ea31264-8724-400a-b55a-fe3b31add833
+for (volt, curr) in zip(ivresult.voltages, currs)
+	println("$volt;$curr")
 end
 
 # ╔═╡ Cell order:
@@ -680,7 +677,6 @@ end
 # ╠═474f5a0f-a574-4b28-b5ad-71db62fc99d6
 # ╟─ba055678-22cf-4ff5-a032-70c3c55686db
 # ╠═be6e227f-0cd4-4aa8-83ad-802bf2e3f7e6
-# ╠═15038435-a74a-4bbb-a31e-0fdff1bdd694
 # ╟─f4ef9513-b18e-48cb-bd86-1dddbad8b561
 # ╟─393bb858-2bd1-4731-ab7a-c6e480bca75e
-# ╠═2e47bc9c-b880-49f5-913b-8589b55c6087
+# ╠═4ea31264-8724-400a-b55a-fe3b31add833
