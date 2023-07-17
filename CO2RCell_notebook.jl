@@ -44,7 +44,7 @@ end;
 
 # ╔═╡ 4b4dc09e-ad77-4a30-801e-53ae8bdfbc2a
 md"""
-### Some Python code
+## Some Python code
 """
 
 # ╔═╡ 6b72af93-cb91-40fe-9224-3ebb90087d75
@@ -75,6 +75,11 @@ begin
 	@phconstants c_0 N_A e k_B
 	F = N_A * e
 end;
+
+# ╔═╡ a08ee2a2-c160-42a9-ac8b-9c9c458a82dc
+md"""
+## System Parameters
+"""
 
 # ╔═╡ 9b22386b-840c-4fed-bf74-d3f9805efcbb
 pH = 6.8;
@@ -560,7 +565,7 @@ function simulate_CO2R(; nref 		= 0,
     @assert isapprox(celldata.c_bulk' * celldata.z, 0, atol = 1.0e-10)
     
     cell        = PNPSystem(grid; bcondition=halfcellbc, reaction=reaction, celldata)
-    ivresult    = ivsweep(cell; voltages, store_solutions=true, kwargs...)
+    ivresult    = ivsweep(cell; voltages, store_solutions=true, more_pre=((x...)->nothing), more_post=((x...)->nothing), kwargs...)
 
 	cell, ivresult
 end;
@@ -620,9 +625,17 @@ Potential at working electrode = $(ivresult.voltages[ϕ_we_index])
 """
 
 # ╔═╡ 4ea31264-8724-400a-b55a-fe3b31add833
-for (volt, curr) in zip(ivresult.voltages, currs)
-	println("$volt;$curr")
+open("CO2RCell.csv"; write=true) do file
+	for (volt, curr) in zip(ivresult.voltages, currs)
+		println(file, "$volt;$curr")
+	end
 end
+
+# ╔═╡ e98393b9-1b48-47b9-8632-b251b3f234b7
+θ_free = 1 - ivresult.solutions[ϕ_we_index][ico2_ad, 1] - ivresult.solutions[ϕ_we_index][ico_ad, 1] - ivresult.solutions[ϕ_we_index][icooh_ad, 1]
+
+# ╔═╡ be056fec-dbaf-4b1a-8fd3-ba5b18b12584
+TableOfContents(title="📚 Table of Contents", indent=true, depth=4, aside=true)
 
 # ╔═╡ Cell order:
 # ╠═e82ccb4e-2223-11ee-1325-ffa068db7408
@@ -632,6 +645,7 @@ end
 # ╠═6b72af93-cb91-40fe-9224-3ebb90087d75
 # ╠═7e845d0f-f498-486e-ab68-7f40c077473f
 # ╠═40a14821-8114-4fd6-8dac-34553525e466
+# ╟─a08ee2a2-c160-42a9-ac8b-9c9c458a82dc
 # ╠═9b22386b-840c-4fed-bf74-d3f9805efcbb
 # ╠═de15dd2c-6286-4a63-9866-7d0e013bbb3b
 # ╟─689756df-805b-418d-9de4-030aebf00321
@@ -680,3 +694,5 @@ end
 # ╟─f4ef9513-b18e-48cb-bd86-1dddbad8b561
 # ╟─393bb858-2bd1-4731-ab7a-c6e480bca75e
 # ╠═4ea31264-8724-400a-b55a-fe3b31add833
+# ╠═e98393b9-1b48-47b9-8632-b251b3f234b7
+# ╟─be056fec-dbaf-4b1a-8fd3-ba5b18b12584

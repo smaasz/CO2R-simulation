@@ -43,21 +43,31 @@ end;
 
 # ╔═╡ c3575a60-3cc8-4f2a-a378-53140ca2d582
 md"""
-### Some Help from Python
+## Some Help from Python
 """
 
 # ╔═╡ c75e1263-2ee2-48e1-8ecd-c499e5d4388d
 py"""
-from ase.thermochemistry import HarmonicThermo
+from ase.thermochemistry import HarmonicThermo, IdealGasThermo
+from ase.build import molecule
 
 def get_thermal_correction_adsorbate(T, frequencies):
 	thermo = HarmonicThermo(frequencies)
 	return thermo.get_helmholtz_energy(T, verbose=False)
+
+
+def get_thermal_correction_ideal_gas(T, frequencies, symmetrynumber, geometry, spin, name):
+    thermo = IdealGasThermo(frequencies, geometry, atoms=molecule(name), symmetrynumber=symmetrynumber, spin=spin) 
+    H = thermo.get_enthalpy(T, verbose=False)
+    S = thermo.get_entropy(T, 1.0e5, verbose=False)
+
+    free_energy = H-T*S
+    return free_energy
 """
 
 # ╔═╡ 98153553-0551-4d4f-abad-d866b3ff3b1d
 md"""
-### Units and Constants
+## Units and Constants
 """
 
 # ╔═╡ 5a37f25b-9b9d-4f38-8c71-b9639bea74fd
@@ -194,7 +204,22 @@ md"""
 """
 
 # ╔═╡ 68c5cfed-7fb3-41c3-bb68-d76c7866383e
-E_ads_CO2 = 0.657600203 * eV;
+begin
+	E_CO2 	  = 0.0 * eV
+	E_ads_CO2 = 0.657600203 * eV
+end
+
+# ╔═╡ 452278ec-2fdf-43a7-a679-c9c2fac86a98
+md"""
+#### Ideal Gas Correction
+"""
+
+# ╔═╡ 78a3d95e-2ce1-4ef7-a219-6c25f97bfba7
+begin
+	frequencies_CO2 = [24.1, 70.7, 635.8, 640.5, 1312.2, 2361.2] * ufac"h / cm / eV" * c_0
+	ideal_gas_params_CO2 = (2, "linear", 0, "CO2")
+	thermo_correction_CO2 = py"get_thermal_correction_ideal_gas"(T, frequencies_CO2, ideal_gas_params_CO2...) * eV
+end;
 
 # ╔═╡ 0a03fb7b-2fa9-48bf-987b-4b8d6ca5d61a
 md"""
@@ -202,10 +227,10 @@ md"""
 """
 
 # ╔═╡ 6d0de240-935e-45e7-b94a-a77d898097cb
-frequencies = [136.85, 183.6, 212.95, 250.7, 306.0, 510.55, 562.25, 1176.05, 1889.85] * h * c_0 / cm / eV;
+frequencies_ads_CO2 = [136.85, 183.6, 212.95, 250.7, 306.0, 510.55, 562.25, 1176.05, 1889.85] * h * c_0 / cm / eV;
 
 # ╔═╡ a5e0c589-1794-4493-a316-5b7a8ac22705
-harmonic_adsorbate_correction = py"get_thermal_correction_adsorbate"(T, frequencies) * eV
+harmonic_adsorbate_correction = py"get_thermal_correction_adsorbate"(T, frequencies_ads_CO2) * eV
 
 # ╔═╡ 0d06826e-710e-4ea3-9157-ca6b21f10640
 md"""
@@ -241,6 +266,11 @@ md"""
 Enable surface reactions: $(@bind allow_surfacereactions PlutoUI.CheckBox(default=true))
 """
 
+# ╔═╡ aee2737d-ce67-4c76-a392-ac2b8d4b337d
+md"""
+Fraction of free sites: $(@bind θ_free PlutoUI.Select([0.99, 0.999, 1.0], default=0.999))
+"""
+
 # ╔═╡ 47e8a25f-6390-4794-bf08-9cf7719c2b9a
 function we_breactions(f,u::VoronoiFVM.BNodeUnknowns{Tval, Tv, Tc, Tp, Ti}, bnode,data) where {Tval, Tv, Tc, Tp, Ti}
 	(; iϕ, ϕ_we, RT) = data
@@ -249,16 +279,15 @@ function we_breactions(f,u::VoronoiFVM.BNodeUnknowns{Tval, Tv, Tc, Tp, Ti}, bnod
 	prefactor   = 1.0e13
 	γ_CO2       = 1.0
 	a_CO2       = γ_CO2 * u[ico2] / Hcp_CO2 / bar
-	θ_free      = 0.9999
-	S           = 9.61e-5 / N_A * (1.0e10)^2 * mol/m^2
+	S           = 9.61e-5 / (N_A * (1.0e-10)^2) * mol/m^2
 	σ           = C_gap * (ϕ_we - u[iϕ] - ϕ_pzc)
 
 	# compute adsorption energy 
 	electrochemical_correction = electro_corrections_params' * [σ^2, σ] * eV
-	ΔG  = (E_ads_CO2 + harmonic_adsorbate_correction + electrochemical_correction) * N_A            
-	
+	ΔG  = (E_ads_CO2 + harmonic_adsorbate_correction + electrochemical_correction - (E_CO2 + thermo_correction_CO2)) * N_A            
+
 	# reaction rate
-	r = prefactor * a_CO2 * θ_free * exp(-ΔG / RT - 2.3 * pH) * S
+	r = prefactor * a_CO2 * θ_free^2 * exp(-ΔG / RT) * S
 	
 	f[ico2] 	= r
 	f[ico]  	= -r
@@ -283,6 +312,11 @@ function halfcellbc(f,u,bnode,data)
         end
         nothing
     end
+
+# ╔═╡ f84cbef0-94ed-4aed-91a0-fee4dae409fd
+md"""
+## Simulation of the $CO_2$ reduction
+"""
 
 # ╔═╡ ba725d6f-0271-4322-9405-42c81a045ef2
 function simulate_CO2R(;nref 	=0,
@@ -389,6 +423,16 @@ begin
 	reveal(vis)
 end
 
+# ╔═╡ 6bf05ef2-bad4-4cc1-9ce4-7a87afb4b488
+open("CO2RCell_wo_microkinetics.csv"; write=true) do file
+	for (volt, curr) in zip(ivresult.voltages, currs)
+		println(file, "$volt;$curr")
+	end
+end
+
+# ╔═╡ f7061689-7c0a-4534-aa07-0802da93f282
+TableOfContents(title="📚 Table of Contents", indent=true, depth=4, aside=true)
+
 # ╔═╡ Cell order:
 # ╠═19bec5c0-23ca-11ee-00fb-c3a65c901c37
 # ╠═5efbbf3d-9f95-47f4-bc18-4888cce1f1f7
@@ -412,6 +456,8 @@ end
 # ╠═8c3e8dc8-a205-4a5a-8f1e-fb15f0065272
 # ╟─7f19d93d-f275-42ee-8ba3-cc3f3bf5f99f
 # ╠═68c5cfed-7fb3-41c3-bb68-d76c7866383e
+# ╟─452278ec-2fdf-43a7-a679-c9c2fac86a98
+# ╠═78a3d95e-2ce1-4ef7-a219-6c25f97bfba7
 # ╟─0a03fb7b-2fa9-48bf-987b-4b8d6ca5d61a
 # ╠═6d0de240-935e-45e7-b94a-a77d898097cb
 # ╠═a5e0c589-1794-4493-a316-5b7a8ac22705
@@ -420,11 +466,15 @@ end
 # ╠═a7f36422-7d2f-4646-b250-e86931d42b6f
 # ╟─f34235fc-5a1d-4a30-8188-c32d8e5b908f
 # ╟─83d7afb2-332e-4548-a287-13ed3fef5b8c
+# ╟─aee2737d-ce67-4c76-a392-ac2b8d4b337d
 # ╠═47e8a25f-6390-4794-bf08-9cf7719c2b9a
 # ╠═a1781717-d9ab-4731-a082-d7691f409738
+# ╟─f84cbef0-94ed-4aed-91a0-fee4dae409fd
 # ╠═ba725d6f-0271-4322-9405-42c81a045ef2
 # ╠═e64f3ebb-4654-4569-9cf9-76bb38d1b133
 # ╟─52f8c956-a04b-466f-80cb-c62b92cdee31
 # ╟─4fb1bf76-936d-4603-b353-6489ef447211
 # ╟─c652b5df-5693-44c5-b0e6-c6e23ebb70aa
 # ╠═c1288f6a-7e10-4f30-aaf8-5799393b1885
+# ╠═6bf05ef2-bad4-4cc1-9ce4-7a87afb4b488
+# ╟─f7061689-7c0a-4534-aa07-0802da93f282

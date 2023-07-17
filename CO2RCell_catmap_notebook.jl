@@ -423,6 +423,13 @@ begin
 	reveal(vis)
 end
 
+# ╔═╡ 13f28a6d-54bf-4dc5-a996-50962c83a66a
+open("CO2RCell_catmap.csv"; write=true) do file
+	for (volt, curr) in zip(ivresult.voltages, currs)
+		println(file, "$volt;$curr")
+	end
+end
+
 # ╔═╡ Cell order:
 # ╠═90c397a8-2256-11ee-32ea-b51af7e1cac3
 # ╠═8af9f185-2934-4560-9e5c-035267e25009
@@ -461,3 +468,4 @@ end
 # ╟─2d89a813-9ed5-4ab4-875f-3ff6f7e234e6
 # ╟─d25ee1bb-d0f0-4955-8d9c-d2166f4c1c8e
 # ╠═82e95927-9e09-4fda-8a34-e609fe1e4337
+# ╠═13f28a6d-54bf-4dc5-a996-50962c83a66a
