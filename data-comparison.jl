@@ -4,40 +4,132 @@
 using Markdown
 using InteractiveUtils
 
+# This Pluto notebook uses @bind for interactivity. When running this notebook outside of Pluto, the following 'mock version' of @bind gives bound variables a default value (instead of an error).
+macro bind(def, element)
+    quote
+        local iv = try Base.loaded_modules[Base.PkgId(Base.UUID("6e696c72-6542-2067-7265-42206c756150"), "AbstractPlutoDingetjes")].Bonds.initial_value catch; b -> missing; end
+        local el = $(esc(element))
+        global $(esc(def)) = Core.applicable(Base.get, el) ? Base.get(el) : iv(el)
+        el
+    end
+end
+
 # ╔═╡ c1656117-48a8-4459-b952-a6b0bf52b348
 begin
 	using CSV
 	using DataFrames
 	using PlutoVista
+	using PlutoUI
 end;
 
-# ╔═╡ 925282cd-fe81-44cc-8842-38be183121cf
-models = ["CO2RCell", "CO2RCell_wo_microkinetics", "CO2RCell_catmap"];
+# ╔═╡ 447eee90-78ba-4256-9ac4-424c4fd82b28
+modes = ["Explicit", "CatMAP"]
 
-# ╔═╡ 7cd338fe-ba59-4f5d-902a-663c12126422
-labels = ["microcinetics by hand", "rate-determining step", "CatMAP interface"];
+# ╔═╡ e375b313-9525-4cbf-8c63-b66e9b5c44d5
+labels = ["microkinetics by hand", "CatMAP interface"]
 
-# ╔═╡ 35372470-f754-44e0-a33f-2ecddb48b34e
-begin
-	data = []
-	for model in models
-		push!(data, CSV.read(model * ".csv", DataFrame; header=["Δϕ [V]", "I [mA/cm^2]"]))
+# ╔═╡ 16b490a9-7a3c-4beb-b018-1d59da80601d
+species = ["K⁺", "HCO₃⁻", "CO₃²⁻", "CO₂", "CO", "OH⁻", "H⁺", "CO", "CO₂", "COOH", "ϕ", "pressure"]
+
+# ╔═╡ 123ba6b6-ebc2-423f-a971-578c9cb5f0c6
+function read_voltage_current_tables!(tables, modes)
+	for mode in modes
+		tables[mode] = CSV.read(
+			"data/CO2RCell_" * mode * "_voltage-current-table.csv", 
+			DataFrame;
+			header = ["Δϕ [V]", "I [mA/cm^2]"]
+		)
 	end
 end;
 
-# ╔═╡ 76132c19-22b6-4f52-90f6-c923f4afdea8
+# ╔═╡ 27fc0d08-45a4-4671-8c73-f868820f02e7
+function read_0point9volts_tables!(tables, modes)
+	for mode in modes
+		tables[mode] = CSV.read(
+			"data/CO2RCell_" * mode * "_0point9volts.csv", 
+			DataFrame;
+			header = ["Distance from WE [m]", species...]
+		)
+	end
+end;
+
+# ╔═╡ 75698716-9a10-4009-be64-edef94c714cc
 begin
-	p = plot(;  xlimits = (-1.5, -0.6), 
+	voltage_current_tables 	= Dict()
+	point9volts_tables 	= Dict()
+	
+	read_voltage_current_tables!(voltage_current_tables, modes)
+	read_0point9volts_tables!(point9volts_tables, modes)
+end;
+
+# ╔═╡ 76132c19-22b6-4f52-90f6-c923f4afdea8
+let
+	p = plot(;  title = "CO₂-Reduction: Current-Voltage plot",
+				xlimits = (-1.5, -0.6), 
 				limits = (-5, 3),
 				xlabel 	= "Δϕ [V]",
 				ylabel 	= "I [mA/cm^2]",
 				yscale 	= :log,
 				legend 	= :ur,
-				resolution = (600, 300)
+				resolution = (700, 400)
 	)
 	
-	for (label, datum) in zip(labels, data)
-		plot!(p, datum[:, 1], datum[:, 2]; label = label)
+	for (label, table) in zip(labels, [voltage_current_tables[mode] for mode in modes])
+		plot!(p, table[:, 1], table[:, 2]; label = label)
+	end
+	p
+end
+
+# ╔═╡ bc8c18bc-3ba9-465c-a112-f1243081da95
+md"""
+Only plot pH-value: $(@bind useonly_pH PlutoUI.CheckBox(; default=false)) 
+"""
+
+# ╔═╡ 4a3af20c-5583-453a-b1c5-c9297db9c667
+let
+	p = plot(;  title 	= "CO₂-Reduction: Species Concentrations at 0.9 V",
+				limits 	= (-14, 2),
+				xlabel 	= "Distance from electrode [μm]",
+				ylabel 	= "log c(a_i)",
+				xscale 	= :log,
+				legend 	= :ur,
+				resolution = (700, 400)
+	)
+
+	# species = ["K+", "HCO3-", "CO3--", "CO2", "CO", "OH-", "H+"]
+	colors = ["orange", "brown", "violet", "red", "blue", "green", "gray"]
+
+	for (label, mode, ls) in zip(labels, modes, [:solid, :dash])
+		if useonly_pH
+			distances 	= point9volts_tables[mode][:, "Distance from WE [m]"] * 1.0e6
+			ci 			= point9volts_tables[mode][:, "H⁺"]
+			#ci = max.(0.0, ci)
+			plot!(
+				p, 
+				distances, 
+				log10.(ci * 1.0e-3); 
+				color 	= colors[7],
+				label 	= species[7] * ", " * label,
+				linestyle = ls,
+				clear 	= false
+			)
+		else
+			for ia = 1:7
+				distances = point9volts_tables[mode][:, "Distance from WE [m]"] * 1.0e6
+				ci = point9volts_tables[mode][:, species[ia]]
+				ci = max.(0.0, ci)
+
+				plot!(
+					p, 
+					distances, 
+					log10.(ci * 1.0e-3); 
+					color 		= colors[ia],
+					label 		= (ls == :solid) ? species[ia] : "",
+					linestyle 	= ls,
+					clear 		= false
+				)
+			end
+		end
 	end
 	p
 end
@@ -47,11 +139,13 @@ PLUTO_PROJECT_TOML_CONTENTS = """
 [deps]
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+PlutoUI = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
 PlutoVista = "646e1f28-b900-46d7-9d87-d554eb38a413"
 
 [compat]
 CSV = "~0.10.11"
 DataFrames = "~1.6.0"
+PlutoUI = "~0.7.52"
 PlutoVista = "~0.8.24"
 """
 
@@ -59,9 +153,15 @@ PlutoVista = "~0.8.24"
 PLUTO_MANIFEST_TOML_CONTENTS = """
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.8.5"
+julia_version = "1.9.2"
 manifest_format = "2.0"
-project_hash = "38b72412158072507db341534aade393c82da6fd"
+project_hash = "1f0f164b5814d1375856bd609d065e8efe8228a8"
+
+[[deps.AbstractPlutoDingetjes]]
+deps = ["Pkg"]
+git-tree-sha1 = "91bd53c39b9cbfb5ef4b015e8b582d344532bd0a"
+uuid = "6e696c72-6542-2067-7265-42206c756150"
+version = "1.2.0"
 
 [[deps.ArgTools]]
 uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
@@ -83,18 +183,6 @@ deps = ["CodecZlib", "Dates", "FilePathsBase", "InlineStrings", "Mmap", "Parsers
 git-tree-sha1 = "44dbf560808d49041989b8a96cae4cffbeb7966a"
 uuid = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 version = "0.10.11"
-
-[[deps.ChainRulesCore]]
-deps = ["Compat", "LinearAlgebra", "SparseArrays"]
-git-tree-sha1 = "e30f2f4e20f7f186dc36529910beaedc60cfa644"
-uuid = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
-version = "1.16.0"
-
-[[deps.ChangesOfVariables]]
-deps = ["InverseFunctions", "LinearAlgebra", "Test"]
-git-tree-sha1 = "2fba81a302a7be671aefe194f0525ef231104e7f"
-uuid = "9e997f8a-9a97-42d5-a9f1-ce6bfc15e2c0"
-version = "0.1.8"
 
 [[deps.CodecZlib]]
 deps = ["TranscodingStreams", "Zlib_jll"]
@@ -127,15 +215,19 @@ uuid = "5ae59095-9a9b-59fe-a467-6f913c188581"
 version = "0.12.10"
 
 [[deps.Compat]]
-deps = ["Dates", "LinearAlgebra", "UUIDs"]
+deps = ["UUIDs"]
 git-tree-sha1 = "4e88377ae7ebeaf29a047aa1ee40826e0b708a5d"
 uuid = "34da2185-b29b-5c13-b0c7-acf172513d20"
 version = "4.7.0"
+weakdeps = ["Dates", "LinearAlgebra"]
+
+    [deps.Compat.extensions]
+    CompatLinearAlgebraExt = "LinearAlgebra"
 
 [[deps.CompilerSupportLibraries_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "e66e0078-7015-5450-92f7-15fbd957f2ae"
-version = "1.0.1+0"
+version = "1.0.5+0"
 
 [[deps.ConcurrentUtilities]]
 deps = ["Serialization", "Sockets"]
@@ -250,11 +342,23 @@ git-tree-sha1 = "cb56ccdd481c0dd7f975ad2b3b62d9eda088f7e2"
 uuid = "cd3eb016-35fb-5094-929b-558a96fad6f3"
 version = "1.9.14"
 
+[[deps.Hyperscript]]
+deps = ["Test"]
+git-tree-sha1 = "8d511d5b81240fc8e6802386302675bdf47737b9"
+uuid = "47d2ed2b-36de-50cf-bf87-49c2cf4b8b91"
+version = "0.0.4"
+
 [[deps.HypertextLiteral]]
 deps = ["Tricks"]
 git-tree-sha1 = "c47c5fa4c5308f27ccaac35504858d8914e102f9"
 uuid = "ac1192a8-f4b3-4bfe-ba22-af5b92cd3ab2"
 version = "0.9.4"
+
+[[deps.IOCapture]]
+deps = ["Logging", "Random"]
+git-tree-sha1 = "d75853a0bdbfb1ac815478bacd89cd27b550ace6"
+uuid = "b5f81e59-6552-4d32-b1f0-c071b021bf89"
+version = "0.2.3"
 
 [[deps.InlineStrings]]
 deps = ["Parsers"]
@@ -265,12 +369,6 @@ version = "1.4.0"
 [[deps.InteractiveUtils]]
 deps = ["Markdown"]
 uuid = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
-
-[[deps.InverseFunctions]]
-deps = ["Test"]
-git-tree-sha1 = "eabe3125edba5c9c10b60a160b1779a000dc8b29"
-uuid = "3587e190-3f89-42d0-90ee-14403ec27112"
-version = "0.1.11"
 
 [[deps.InvertedIndices]]
 git-tree-sha1 = "0dc7b50b8d436461be01300fd8cd45aa0274b038"
@@ -292,6 +390,12 @@ deps = ["Preferences"]
 git-tree-sha1 = "abc9885a7ca2052a736a600f7fa66209f96506e1"
 uuid = "692b3bcd-3c85-4b1f-b108-f13ce0eb3210"
 version = "1.4.1"
+
+[[deps.JSON]]
+deps = ["Dates", "Mmap", "Parsers", "Unicode"]
+git-tree-sha1 = "31e996f0a15c7b280ba9f76636b3ff9e2ae58c9a"
+uuid = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+version = "0.21.4"
 
 [[deps.LaTeXStrings]]
 git-tree-sha1 = "f2355693d6778a178ade15952b7ac47a4ff97996"
@@ -326,14 +430,24 @@ version = "1.10.2+0"
 uuid = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
 
 [[deps.LinearAlgebra]]
-deps = ["Libdl", "libblastrampoline_jll"]
+deps = ["Libdl", "OpenBLAS_jll", "libblastrampoline_jll"]
 uuid = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 
 [[deps.LogExpFunctions]]
-deps = ["ChainRulesCore", "ChangesOfVariables", "DocStringExtensions", "InverseFunctions", "IrrationalConstants", "LinearAlgebra"]
+deps = ["DocStringExtensions", "IrrationalConstants", "LinearAlgebra"]
 git-tree-sha1 = "c3ce8e7420b3a6e071e0fe4745f5d4300e37b13f"
 uuid = "2ab3a3ac-af41-5b50-aa03-7779005ae688"
 version = "0.3.24"
+
+    [deps.LogExpFunctions.extensions]
+    LogExpFunctionsChainRulesCoreExt = "ChainRulesCore"
+    LogExpFunctionsChangesOfVariablesExt = "ChangesOfVariables"
+    LogExpFunctionsInverseFunctionsExt = "InverseFunctions"
+
+    [deps.LogExpFunctions.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+    ChangesOfVariables = "9e997f8a-9a97-42d5-a9f1-ce6bfc15e2c0"
+    InverseFunctions = "3587e190-3f89-42d0-90ee-14403ec27112"
 
 [[deps.Logging]]
 uuid = "56ddb016-857b-54e1-b83d-db4d58db5568"
@@ -362,7 +476,7 @@ version = "1.1.7"
 [[deps.MbedTLS_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "c8ffd9c3-330d-5841-b78e-0817d7145fa1"
-version = "2.28.0+0"
+version = "2.28.2+0"
 
 [[deps.Missings]]
 deps = ["DataAPI"]
@@ -375,7 +489,7 @@ uuid = "a63ad114-7e13-5084-954f-fe012c677804"
 
 [[deps.MozillaCACerts_jll]]
 uuid = "14a3606d-f60d-562e-9121-12d972cd8159"
-version = "2022.2.1"
+version = "2022.10.11"
 
 [[deps.MsgPack]]
 deps = ["Serialization"]
@@ -390,7 +504,7 @@ version = "1.2.0"
 [[deps.OpenBLAS_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
 uuid = "4536629a-c528-5b80-bd46-f80d51c5b363"
-version = "0.3.20+0"
+version = "0.3.21+4"
 
 [[deps.OpenLibm_jll]]
 deps = ["Artifacts", "Libdl"]
@@ -427,15 +541,21 @@ uuid = "69de0a69-1ddd-5017-9359-2bf0b02dc9f0"
 version = "2.7.1"
 
 [[deps.Pkg]]
-deps = ["Artifacts", "Dates", "Downloads", "LibGit2", "Libdl", "Logging", "Markdown", "Printf", "REPL", "Random", "SHA", "Serialization", "TOML", "Tar", "UUIDs", "p7zip_jll"]
+deps = ["Artifacts", "Dates", "Downloads", "FileWatching", "LibGit2", "Libdl", "Logging", "Markdown", "Printf", "REPL", "Random", "SHA", "Serialization", "TOML", "Tar", "UUIDs", "p7zip_jll"]
 uuid = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
-version = "1.8.0"
+version = "1.9.2"
 
 [[deps.Pluto]]
 deps = ["Base64", "Configurations", "Dates", "Distributed", "FileWatching", "FuzzyCompletions", "HTTP", "HypertextLiteral", "InteractiveUtils", "Logging", "LoggingExtras", "MIMEs", "Markdown", "MsgPack", "Pkg", "PrecompileSignatures", "PrecompileTools", "REPL", "RegistryInstances", "RelocatableFolders", "Sockets", "TOML", "Tables", "URIs", "UUIDs"]
 git-tree-sha1 = "06fec2244568a4641e3352d20d0a0a608df6fa92"
 uuid = "c3e4b0f8-55cb-11ea-2926-15256bba5781"
 version = "0.19.27"
+
+[[deps.PlutoUI]]
+deps = ["AbstractPlutoDingetjes", "Base64", "ColorTypes", "Dates", "FixedPointNumbers", "Hyperscript", "HypertextLiteral", "IOCapture", "InteractiveUtils", "JSON", "Logging", "MIMEs", "Markdown", "Random", "Reexport", "URIs", "UUIDs"]
+git-tree-sha1 = "e47cd150dbe0443c3a3651bc5b9cbd5576ab75b7"
+uuid = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
+version = "0.7.52"
 
 [[deps.PlutoVista]]
 deps = ["ColorSchemes", "Colors", "DocStringExtensions", "GridVisualizeTools", "HypertextLiteral", "Pluto", "UUIDs"]
@@ -535,14 +655,20 @@ uuid = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
 version = "1.1.1"
 
 [[deps.SparseArrays]]
-deps = ["LinearAlgebra", "Random"]
+deps = ["Libdl", "LinearAlgebra", "Random", "Serialization", "SuiteSparse_jll"]
 uuid = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 
 [[deps.SpecialFunctions]]
-deps = ["ChainRulesCore", "IrrationalConstants", "LogExpFunctions", "OpenLibm_jll", "OpenSpecFun_jll"]
+deps = ["IrrationalConstants", "LogExpFunctions", "OpenLibm_jll", "OpenSpecFun_jll"]
 git-tree-sha1 = "7beb031cf8145577fbccacd94b8a8f4ce78428d3"
 uuid = "276daf66-3868-5448-9aa4-cd146d93841b"
 version = "2.3.0"
+
+    [deps.SpecialFunctions.extensions]
+    SpecialFunctionsChainRulesCoreExt = "ChainRulesCore"
+
+    [deps.SpecialFunctions.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
 
 [[deps.StaticArraysCore]]
 git-tree-sha1 = "1d5708d926c76a505052d0d24a846d5da08bc3a4"
@@ -552,16 +678,22 @@ version = "1.4.1"
 [[deps.Statistics]]
 deps = ["LinearAlgebra", "SparseArrays"]
 uuid = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+version = "1.9.0"
 
 [[deps.StringManipulation]]
 git-tree-sha1 = "46da2434b41f41ac3594ee9816ce5541c6096123"
 uuid = "892a3eda-7b42-436c-8928-eab12a02cf0e"
 version = "0.3.0"
 
+[[deps.SuiteSparse_jll]]
+deps = ["Artifacts", "Libdl", "Pkg", "libblastrampoline_jll"]
+uuid = "bea87d4a-7f5b-5778-9afe-8cc45184846c"
+version = "5.10.1+6"
+
 [[deps.TOML]]
 deps = ["Dates"]
 uuid = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
-version = "1.0.0"
+version = "1.0.3"
 
 [[deps.TableTraits]]
 deps = ["IteratorInterfaceExtensions"]
@@ -578,7 +710,7 @@ version = "1.10.1"
 [[deps.Tar]]
 deps = ["ArgTools", "SHA"]
 uuid = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
-version = "1.10.1"
+version = "1.10.0"
 
 [[deps.TensorCore]]
 deps = ["LinearAlgebra"]
@@ -627,12 +759,12 @@ version = "1.6.1"
 [[deps.Zlib_jll]]
 deps = ["Libdl"]
 uuid = "83775a58-1f1d-513f-b197-d71354ab007a"
-version = "1.2.12+3"
+version = "1.2.13+0"
 
 [[deps.libblastrampoline_jll]]
-deps = ["Artifacts", "Libdl", "OpenBLAS_jll"]
+deps = ["Artifacts", "Libdl"]
 uuid = "8e850b90-86db-534c-a0d3-1478176c7d93"
-version = "5.1.1+0"
+version = "5.8.0+0"
 
 [[deps.nghttp2_jll]]
 deps = ["Artifacts", "Libdl"]
@@ -647,9 +779,14 @@ version = "17.4.0+0"
 
 # ╔═╡ Cell order:
 # ╠═c1656117-48a8-4459-b952-a6b0bf52b348
-# ╠═925282cd-fe81-44cc-8842-38be183121cf
-# ╠═7cd338fe-ba59-4f5d-902a-663c12126422
-# ╠═35372470-f754-44e0-a33f-2ecddb48b34e
+# ╠═447eee90-78ba-4256-9ac4-424c4fd82b28
+# ╠═e375b313-9525-4cbf-8c63-b66e9b5c44d5
+# ╠═16b490a9-7a3c-4beb-b018-1d59da80601d
+# ╠═123ba6b6-ebc2-423f-a971-578c9cb5f0c6
+# ╠═27fc0d08-45a4-4671-8c73-f868820f02e7
+# ╠═75698716-9a10-4009-be64-edef94c714cc
 # ╠═76132c19-22b6-4f52-90f6-c923f4afdea8
+# ╟─bc8c18bc-3ba9-465c-a112-f1243081da95
+# ╠═4a3af20c-5583-453a-b1c5-c9297db9c667
 # ╟─00000000-0000-0000-0000-000000000001
 # ╟─00000000-0000-0000-0000-000000000002

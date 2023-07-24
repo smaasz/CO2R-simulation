@@ -652,7 +652,7 @@ function compute_rates_catmap!(
 			u[bulk["OH⁻"].index], 
 			1.0
 		],
-		σ / (μF/cm^2)
+		σ / (μF/cm^2) + 1.0e-8
 	)[1:end-1]
 	nothing
 end;
@@ -780,7 +780,7 @@ Potential at working electrode = $(ivresult.voltages[ϕ_we_index])
 """
 
 # ╔═╡ 94e387ac-236e-46c6-9981-cbce1c973a1f
-begin
+let
 	F = N_A * e
 	
 	vis = GridVisualizer(; Plotter = PlutoVista, layout=(1,2), resolution = (1200, 300))
@@ -816,6 +816,33 @@ begin
 	
 	reveal(vis)
 end
+
+# ╔═╡ f4648583-9de7-47a2-8fae-ed84e8a687bd
+md"""
+### Save to csv-File
+"""
+
+# ╔═╡ a9992ee3-466c-44ce-a7dc-ee459729d57a
+function save_ivresult(ivresult, mode)
+
+	F = N_A * e
+	currs = [j[bulk["OH⁻"].index] * F for j in ivresult.j_we] * ufac"cm^2/mA"
+	
+	open("data/CO2RCell_$(mode)_voltage-current-table.csv"; write=true) do file
+		for (volt, curr) in zip(ivresult.voltages, currs)
+			println(file, "$volt;$curr")
+		end
+	end
+
+	open("data/CO2RCell_$(mode)_0point9volts.csv"; write=true) do file
+		for (dist, vs) in zip(grid[Coordinates], eachcol(ivresult.solutions[ϕ_we_index]))
+			println(file, "$dist,$(join(vs, ","))")
+		end
+	end
+end
+
+# ╔═╡ 755564b3-393c-47a5-917f-e52ffbdd01ec
+save_ivresult(ivresult, rate_const_mode);
 
 # ╔═╡ Cell order:
 # ╟─92be2111-381e-4260-a514-1632c5a38355
@@ -855,7 +882,7 @@ end
 # ╠═e77852ef-83de-44dc-8048-6bbea7aa7d9c
 # ╠═bb1dcf91-578b-4440-a4b9-1617a4cd3032
 # ╟─11efa591-a50d-451b-b9bf-31c8d5c87a7c
-# ╟─0d945390-e2eb-427a-9879-016b77f85476
+# ╠═0d945390-e2eb-427a-9879-016b77f85476
 # ╟─7381aab1-e6a8-4e4f-9f82-b2114a31c011
 # ╟─ee06a76d-c191-4aa3-8e1f-75ce57513406
 # ╠═94e387ac-236e-46c6-9981-cbce1c973a1f
@@ -895,3 +922,6 @@ end
 # ╟─015d40f6-de19-4288-b5c3-5f85e0a8f745
 # ╠═741d77a0-9376-4192-ba82-c9d7ae98001d
 # ╠═0b3c0047-e8d2-49d6-9566-570fde1fad71
+# ╟─f4648583-9de7-47a2-8fae-ed84e8a687bd
+# ╠═a9992ee3-466c-44ce-a7dc-ee459729d57a
+# ╠═755564b3-393c-47a5-917f-e52ffbdd01ec
