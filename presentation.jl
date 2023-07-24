@@ -29,6 +29,8 @@ begin
 	using LiquidElectrolytes
 	using VoronoiFVM
 	using PyCall
+	using CatmapInterface
+	using ForwardDiff
 end;
 
 # ╔═╡ 92be2111-381e-4260-a514-1632c5a38355
@@ -215,6 +217,11 @@ with the transition state: $*CO-OH^{TS}$
 $*CO_{(ad)} \rightleftharpoons CO_{(aq)} + *$
 """
 
+# ╔═╡ aed5431b-a89c-46c6-be7c-2d1c6fcd00c7
+md"""
+Choose calculation mode of the rate constants: $(@bind rate_const_mode PlutoUI.Select(["Explicit", "CatMAP"]))
+"""
+
 # ╔═╡ fb3df4df-2a66-4796-a7de-be46e8c8fd29
 md"""
 ## The Simulation
@@ -304,6 +311,11 @@ function reaction(f, u::VoronoiFVM.NodeUnknowns{Tv, Tc, Tp, Ti}, node, data) whe
 	nothing
 end;
 
+# ╔═╡ 8905005c-0d88-4e2b-ae3e-cbee952d9a86
+md"""
+### From Python
+"""
+
 # ╔═╡ 4fda1782-4f70-4007-9ac3-12c931c4bd54
 py"""
 from ase.thermochemistry import HarmonicThermo, IdealGasThermo
@@ -326,7 +338,12 @@ def get_thermal_correction_ideal_gas(T, frequencies, symmetrynumber, geometry, s
 
 # ╔═╡ 0742ba27-af65-4c9d-b28d-795837185b1b
 md"""
-### Compute Rate Constants
+### Compute Rates
+"""
+
+# ╔═╡ 564ac0ed-ad22-4515-8a32-a149cb965499
+md"""
+### Explicit Calculation
 """
 
 # ╔═╡ 3c8b1d70-c614-4733-98bc-704c2c827169
@@ -376,7 +393,7 @@ frequencies = Dict(
 
 # ╔═╡ a4acc450-bcf5-4938-85c2-f82492235890
 md"""
-### Thermodynamical and Electrochemical Corrections
+#### Thermodynamical and Electrochemical Corrections
 
 The energy calculations hold at 0 K and no excess surface charges. Therefore the energy terms have to be corrected according to the system parameters.
 """
@@ -386,7 +403,7 @@ thermo_corrections = Dict(zip(keys(E_f), zeros(length(E_f))));
 
 # ╔═╡ 06d28618-e44c-4fd3-9940-3628d6816334
 md"""
-#### Correction of Bulk Species
+##### Correction of Bulk Species
 """
 
 # ╔═╡ df663eb4-9e27-4ce8-9a93-3b8cd58870c9
@@ -407,7 +424,7 @@ end
 
 # ╔═╡ f98e4f84-1b0e-4bd9-a0e3-9b530f8f2afa
 md"""
-#### Correction of Adsorbates
+##### Correction of Adsorbates
 """
 
 # ╔═╡ 872c20f3-b9c1-40b7-8cc7-10eed29d6e16
@@ -419,7 +436,7 @@ end;
 
 # ╔═╡ ec7b12e0-e385-4014-b08c-df1ebfbcad29
 md"""
-#### BEB scaling of the Transition State
+##### BEB scaling of the Transition State
 """
 
 # ╔═╡ 977ed0df-69ac-4a9e-8c63-a712107ee1e3
@@ -427,7 +444,7 @@ thermo_corrections["COOH-H2O-ele_t"] += (thermo_corrections["COOH*_t"] + thermo_
 
 # ╔═╡ 8fac9276-0fa1-4bb8-9cc8-55f9ede5994e
 md"""
-#### Electrochemical Corrections
+##### Electrochemical Corrections
 
 The free energies $ΔG_f$ of the surface species are corrected according to the (excess) surface charge density $σ$ by a fitted quadratic model:
 
@@ -462,8 +479,13 @@ begin ## _get_echem_corrections
 	thermo_corrections["OH_g"] += G_OH
 end;
 
+# ╔═╡ f4413efe-7f2b-449a-8a91-91c3634e8737
+md"""
+#### Explicit Rate Calculations
+"""
+
 # ╔═╡ ddaba9e7-3af8-4bf8-82c5-298d37159040
-function compute_rateconstants!(k, σ, ϕ_we)
+function compute_rateconstants_explicit!(k, σ, ϕ_we)
 	(kf, kr) = k
 	
 	Tval = eltype(kf)
@@ -533,6 +555,124 @@ function compute_rateconstants!(k, σ, ϕ_we)
 	kr[4] = 1.0e8 * exp(-(G_TS[4] - G_FS[4]) / (k_B * T))
 end;
 
+# ╔═╡ ba1af1f7-8452-4288-900a-d6e305706d73
+function compute_rates_explicit!(rates, u, σ, ϕ_we)
+	
+	Tval = eltype(u)
+	
+	kf = zeros(Tval, 4)
+	kr = zeros(Tval, 4)
+	compute_rateconstants_explicit!((kf, kr), σ, ϕ_we)
+
+	θ_free  = 1 - u[surface["CO₂"].index] - u[surface["CO"].index] - u[surface["COOH"].index]
+
+	rates[1]  = kf[1] * (u[bulk["CO₂"].index] / Hcp_CO2 / bar) * θ_free^2 
+	rates[1] -= kr[1] * u[surface["CO₂"].index]
+	
+	rates[2]  = kf[2] * u[surface["CO₂"].index] * 1.0 * 1.0 
+	rates[2] -= kr[2] * u[surface["COOH"].index] * u[bulk["OH⁻"].index]
+	
+	rates[3]  = kf[3] * u[surface["COOH"].index] * 1.0 * 1.0 
+	rates[3] -= kr[3] * u[surface["CO"].index] * 1.0 * u[bulk["OH⁻"].index] * θ_free
+	
+	rates[4]  = kf[4] * u[surface["CO"].index] 
+	rates[4] -= kr[4] * (u[bulk["CO"].index] / Hcp_CO / bar) * θ_free
+
+	nothing
+end;
+
+# ╔═╡ fdb9b695-6fcf-4535-989c-c2abdb9f69ab
+md"""
+### Catmap Interface
+"""
+
+# ╔═╡ efc51b73-609c-4d0e-a1ca-8224adb0f4b2
+begin
+	catmap_setup_file   = "catmap_CO2R_template.mkm"
+    catmap_energy_file  = "catmap_CO2R_energies.txt"
+end;
+
+# ╔═╡ f55d15fd-ba9e-4dbb-9f6f-eba5c85f6139
+mutable struct CatmapData
+    rate_constant_fns
+    compute_rates
+end
+
+# ╔═╡ a4191983-dedf-444d-9c2d-ac2bff89edd3
+function instantiate_catmap_template(template_file_path, ϕ_we)
+    
+    input_instance_string = open(template_file_path, "r") do template_file
+        read(template_file, String)
+    end
+
+    # replace descriptor range
+    input_instance_string = replace(input_instance_string, r"descriptor_ranges.*" => "descriptor_ranges = [[$ϕ_we, $ϕ_we], [298, 298]]")
+
+    input_instance_file_name = "CO2R.mkm"
+    open(input_instance_file_name, "w") do input_instance_file
+        write(input_instance_file, input_instance_string)
+    end
+
+    return input_instance_file_name
+end;
+
+# ╔═╡ f1a4de16-21d3-415a-b2ef-37436f04ad89
+if rate_const_mode == "CatMAP"
+  	instance_input_file_name = instantiate_catmap_template(catmap_setup_file, 0.0)
+    
+	(_, rate_constant_fns, _, compute_rates)  = get_catmap_output(
+		instance_input_file_name, 
+		catmap_energy_file, 
+		true
+	)
+	catmap_data = CatmapData(rate_constant_fns, compute_rates)    
+end;
+
+# ╔═╡ 015d40f6-de19-4288-b5c3-5f85e0a8f745
+md"""
+#### CatMAP Rate Calculations
+"""
+
+# ╔═╡ 741d77a0-9376-4192-ba82-c9d7ae98001d
+function compute_rates_catmap!(
+	rates, 
+	u::VoronoiFVM.BNodeUnknowns{Tval, Tv, Tc, Tp, Ti},
+	σ, 
+	ϕ_we
+) where {Tval, Tv, Tc, Tp, Ti}
+
+	rates .= catmap_data.compute_rates(
+		catmap_data.rate_constant_fns[1], 
+		[u[surface["CO₂"].index], u[surface["COOH"].index], u[surface["CO"].index]], 
+		[
+			u[bulk["CO₂"].index] / Hcp_CO2 / bar, 
+			u[bulk["CO"].index] / Hcp_CO / bar, 
+			1.0, 
+			1.0, 
+			u[bulk["OH⁻"].index], 
+			1.0
+		],
+		σ / (μF/cm^2)
+	)[1:end-1]
+	nothing
+end;
+
+# ╔═╡ 7d9a1531-c1d0-409b-9bf0-f361350bb7cb
+function compute_rates!(
+	rates, 
+	u::VoronoiFVM.BNodeUnknowns{Tval, Tv, Tc, Tp, Ti}, 
+	σ, 
+	ϕ_we; mode = "Explicit"
+) where {Tval, Tv, Tc, Tp, Ti}
+	if mode == "Explicit"
+		compute_rates_explicit!(rates, u, σ, ϕ_we)
+	elseif mode == "CatMAP"
+		compute_rates_catmap!(rates, u, σ, ϕ_we)
+	else 
+		throw(ArgumentError("The mode $mode for calculation of the rates is invalid."))
+	end
+end
+
 # ╔═╡ 2fdaa88d-d04f-4dac-9362-b8996786d3a0
 function we_breactions(
 	f, 
@@ -546,26 +686,11 @@ function we_breactions(
 
 	σ = C_gap * (ϕ_we - u[iϕ] - ϕ_pzc)
 
-	kf = zeros(Tval, 4)
-	kr = zeros(Tval, 4)
-	compute_rateconstants!((kf, kr), σ, ϕ_we)
-			
-	θ_free  = 1 - u[surface["CO₂"].index] - u[surface["CO"].index] - u[surface["COOH"].index]
-
 	# rates of the elementary reactions
 	rates 	 = zeros(Tval, 4)
-	
-	rates[1]  = kf[1] * (u[bulk["CO₂"].index] / Hcp_CO2 / bar) * θ_free^2 
-	rates[1] -= kr[1] * u[surface["CO₂"].index]
-	
-	rates[2]  = kf[2] * u[surface["CO₂"].index] * 1.0 * 1.0 
-	rates[2] -= kr[2] * u[surface["COOH"].index] * u[bulk["OH⁻"].index]
-	
-	rates[3]  = kf[3] * u[surface["COOH"].index] * 1.0 * 1.0 
-	rates[3] -= kr[3] * u[surface["CO"].index] * 1.0 * u[bulk["OH⁻"].index] * θ_free
-	
-	rates[4]  = kf[4] * u[surface["CO"].index] 
-	rates[4] -= kr[4] * (u[bulk["CO"].index] / Hcp_CO / bar) * θ_free
+	compute_rates!(rates, u, σ, ϕ_we; mode = rate_const_mode)
+
+	#println("$(ForwardDiff.value.(rates))")
 	
 	# bulk species
 	f[bulk["CO"].index]     += -rates[4] * S
@@ -601,6 +726,23 @@ function halfcellbc(
 	nothing
 end;
 
+# ╔═╡ 0b3c0047-e8d2-49d6-9566-570fde1fad71
+function pre(sol, t)
+	
+	instance_input_file_name = instantiate_catmap_template(catmap_setup_file, -t)
+	
+	(_, rate_constant_fns, _, compute_rates)  = get_catmap_output(
+		instance_input_file_name, 
+		catmap_energy_file, 
+		true
+	)
+	
+	catmap_data.rate_constant_fns           = rate_constant_fns
+	catmap_data.compute_rates               = compute_rates
+
+	nothing
+end;
+
 # ╔═╡ e77852ef-83de-44dc-8048-6bbea7aa7d9c
 function simulate_CO2R(grid, celldata; voltages = (-1.5:0.1:-0.0) * V, kwargs...)
     
@@ -614,7 +756,9 @@ function simulate_CO2R(grid, celldata; voltages = (-1.5:0.1:-0.0) * V, kwargs...
 
     
     cell        = PNPSystem(grid; bcondition=halfcellbc, reaction=reaction, celldata)
-    ivresult    = ivsweep(cell; voltages, store_solutions=true, kwargs...)
+    
+	more_pre 	= (rate_const_mode == "CatMAP") ? pre : ((args...) -> nothing)
+	ivresult    = ivsweep(cell; voltages, store_solutions=true, more_pre = more_pre, kwargs...)
 
 	cell, ivresult
 end;
@@ -623,7 +767,7 @@ end;
 (cell, ivresult) = simulate_CO2R(grid, celldata);
 
 # ╔═╡ 0d945390-e2eb-427a-9879-016b77f85476
-(~, default_index) = findmin(abs, ivresult.voltages .- -0.9 * V);
+(_, default_index) = findmin(abs, ivresult.voltages .- -0.9 * V);
 
 # ╔═╡ 7381aab1-e6a8-4e4f-9f82-b2114a31c011
 md"""
@@ -704,6 +848,7 @@ end
 # ╠═2a7a3783-846d-4715-960e-979b72ded8d9
 # ╟─04c5a531-f7bb-4a93-a619-2afd92586e2a
 # ╟─faedb03c-c4ee-45cc-9263-0fd8eaf09850
+# ╟─aed5431b-a89c-46c6-be7c-2d1c6fcd00c7
 # ╠═2fdaa88d-d04f-4dac-9362-b8996786d3a0
 # ╠═f5231e9e-f00c-4b39-8fe7-b25f626e62d0
 # ╟─fb3df4df-2a66-4796-a7de-be46e8c8fd29
@@ -716,8 +861,11 @@ end
 # ╠═94e387ac-236e-46c6-9981-cbce1c973a1f
 # ╟─20114f4a-527f-4782-8b67-8bb8fe824319
 # ╠═c64685fb-4c1c-435d-af95-7dafdfc77e15
+# ╟─8905005c-0d88-4e2b-ae3e-cbee952d9a86
 # ╠═4fda1782-4f70-4007-9ac3-12c931c4bd54
 # ╟─0742ba27-af65-4c9d-b28d-795837185b1b
+# ╠═7d9a1531-c1d0-409b-9bf0-f361350bb7cb
+# ╟─564ac0ed-ad22-4515-8a32-a149cb965499
 # ╠═3c8b1d70-c614-4733-98bc-704c2c827169
 # ╟─e59911c0-e234-459b-a6b0-804bee22cb1d
 # ╠═cb4fb272-1b8c-41b6-b264-881ec0e6e312
@@ -736,4 +884,14 @@ end
 # ╠═4e0d3004-acaf-4098-b123-b378c03fbe99
 # ╠═0570d57c-5edb-41d2-a2a4-d0d2b4abe778
 # ╠═a0b39948-7364-4709-b0c2-f580797ac2aa
+# ╟─f4413efe-7f2b-449a-8a91-91c3634e8737
 # ╠═ddaba9e7-3af8-4bf8-82c5-298d37159040
+# ╠═ba1af1f7-8452-4288-900a-d6e305706d73
+# ╟─fdb9b695-6fcf-4535-989c-c2abdb9f69ab
+# ╠═efc51b73-609c-4d0e-a1ca-8224adb0f4b2
+# ╠═f55d15fd-ba9e-4dbb-9f6f-eba5c85f6139
+# ╠═a4191983-dedf-444d-9c2d-ac2bff89edd3
+# ╠═f1a4de16-21d3-415a-b2ef-37436f04ad89
+# ╟─015d40f6-de19-4288-b5c3-5f85e0a8f745
+# ╠═741d77a0-9376-4192-ba82-c9d7ae98001d
+# ╠═0b3c0047-e8d2-49d6-9566-570fde1fad71
