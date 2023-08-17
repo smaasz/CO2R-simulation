@@ -471,13 +471,16 @@ electro_correction_params = Dict(
 );
 
 # ╔═╡ a0b39948-7364-4709-b0c2-f580797ac2aa
+# ╠═╡ disabled = true
+#=╠═╡
 begin ## _get_echem_corrections
 	G_H2O       = E_f["H2O_g"] + thermo_corrections["H2O_g"]
 	G_H2        = E_f["H2_g"] + thermo_corrections["H2_g"]
-	G_H         = 0.5 * G_H2 - .0592 * pH / 298.14 * T * eV
+	#G_H         = 0.5 * G_H2 - .0592 * local_pH / 298.14 * T * eV # wrong pH, use local pH
 	G_OH        = G_H2O - G_H
-	thermo_corrections["OH_g"] += G_OH
+	#thermo_corrections["OH_g"] += G_OH
 end;
+  ╠═╡ =#
 
 # ╔═╡ f4413efe-7f2b-449a-8a91-91c3634e8737
 md"""
@@ -485,8 +488,9 @@ md"""
 """
 
 # ╔═╡ ddaba9e7-3af8-4bf8-82c5-298d37159040
-function compute_rateconstants_explicit!(k, σ, ϕ_we)
+function compute_rateconstants_explicit!(k, σ, ϕ_we, ϕ, local_pH)
 	(kf, kr) = k
+	β = 0.5 # hack
 	
 	Tval = eltype(kf)
 	
@@ -495,9 +499,11 @@ function compute_rateconstants_explicit!(k, σ, ϕ_we)
 
 	## simple_electrochemical
 	#electro_corrections["ele_g"] -= (ϕ_we - (ϕ_we - u[iϕ])) * eV
-	electro_corrections["ele_g"] -= ϕ_we * eV
+	electro_corrections["ele_g"] -= (ϕ_we - ϕ) * eV
 	#electro_corrections["COOH-H2O-ele_t"] += (-u[iϕ] + 0.5 * (u[iϕ] - ϕ_pzc)) * eV
-	electro_corrections["COOH-H2O-ele_t"] += (-ϕ_we + 0.5 * ϕ_we) * eV
+	# Frumking correct: ϕ_we - u[iϕ]
+	electro_corrections["COOH-H2O-ele_t"] -= β * (ϕ_we - ϕ) * eV
+
 
 	## hbond_electrochemical
 	electro_corrections["COOH*_t"] += -0.25 * eV
@@ -509,19 +515,25 @@ function compute_rateconstants_explicit!(k, σ, ϕ_we)
 		electro_corrections[sp] += electro_correction_params[sp]' * [σ^2, σ] * eV
 	end
 
+	## _get_echem_corrections
+	G_H2O       = E_f["H2O_g"] + thermo_corrections["H2O_g"]
+	G_H2        = E_f["H2_g"] + thermo_corrections["H2_g"]
+	G_H         = 0.5 * G_H2 - .0592 * local_pH / 298.14 * T * eV
+	G_OH        = G_H2O - G_H
+
 
 	G_f = Dict(zip([bulk_species; surface_species; transition_state], zeros(Tval, nc + na + length(transition_state))))
 	
 	for sp in [bulk_species; surface_species; transition_state]
 		G_f[sp] += E_f[sp] + thermo_corrections[sp] + electro_corrections[sp]
 	end
+	G_f["OH_g"] += G_OH
 
 	# rate constants
 	G_IS = zeros(Tval, 4)
 	G_FS = zeros(Tval,4)
 	G_TS = zeros(Tval, 4)
-
-
+	
 	# 'CO2_g + 2*_t <-> CO2*_t',	                  #1
 	G_IS[1] = G_f["CO2_g"] + 2 * 0.0
 	G_FS[1] = G_f["CO2*_t"]
@@ -551,8 +563,8 @@ function compute_rateconstants_explicit!(k, σ, ϕ_we)
 	G_FS[4] = G_f["CO_g"] + 0.0
 	G_TS[4] = max(G_IS[4], G_FS[4])
 
-	kf[4] = 1.0e8 * exp(-(G_TS[4] - G_IS[4]) / (k_B * T))
-	kr[4] = 1.0e8 * exp(-(G_TS[4] - G_FS[4]) / (k_B * T))
+	kf[4] = 1.0e13 * exp(-(G_TS[4] - G_IS[4]) / (k_B * T))
+	kr[4] = 1.0e13 * exp(-(G_TS[4] - G_FS[4]) / (k_B * T))
 end;
 
 # ╔═╡ ba1af1f7-8452-4288-900a-d6e305706d73
@@ -562,7 +574,9 @@ function compute_rates_explicit!(rates, u, σ, ϕ_we)
 	
 	kf = zeros(Tval, 4)
 	kr = zeros(Tval, 4)
-	compute_rateconstants_explicit!((kf, kr), σ, ϕ_we)
+	
+	local_pH = -log10(u[bulk["H⁺"].index] / (mol/dm^3))
+	compute_rateconstants_explicit!((kf, kr), σ, ϕ_we, u[celldata.iϕ], local_pH)
 
 	θ_free  = 1 - u[surface["CO₂"].index] - u[surface["CO"].index] - u[surface["COOH"].index]
 
