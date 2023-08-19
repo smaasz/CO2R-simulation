@@ -31,7 +31,7 @@ md"""
 
 # ╔═╡ b24253cc-e044-48ad-8d1c-f12a6765c398
 begin
-	const ϕ_we 	= -0.5
+	const ϕ_we 	= -0.8
 	const T 	= 298.0
 	const C_gap = 20 * μF/cm^2
 	const ϕ_pzc = 0.16 * ufac"V"
@@ -247,9 +247,6 @@ md"""
 The energy calculations hold at 0 K and no excess surface charges. Therefore the energy terms have to be corrected according to the system parameters.
 """
 
-# ╔═╡ c3541e3a-a376-4223-95b5-940b53adbba2
-thermo_corrections = Dict(zip(keys(E_f), zeros(length(E_f))));
-
 # ╔═╡ 15924d1b-07b9-48b7-bc0f-b2836f391a1d
 md"""
 ##### Correction of Bulk Species
@@ -265,31 +262,37 @@ ideal_gas_params = Dict(
 
 # ╔═╡ 42b0eb6d-21a2-4b88-b09a-42bfc0289c51
 ### ideal gases
-for sp in bulk_species
-	if sp ∉ ["OH_g", "ele_g"]
-		thermo_corrections[sp] += get_thermal_correction_ideal_gas(T, frequencies[sp], ideal_gas_params[sp]...) * eV
+function add_ideal_gas_correction!(thermo_corrections)
+	for sp in bulk_species
+		if sp ∉ ["OH_g", "ele_g"]
+			thermo_corrections[sp] += get_thermal_correction_ideal_gas(T, frequencies[sp], ideal_gas_params[sp]...) * eV
+		end
 	end
+	nothing
 end
 
 # ╔═╡ befc5723-14b7-4047-ba88-c89bd4815a62
 md"""
-##### Correction of Adsorbates
+##### Correction of Adsorbates & BEB scaling of the Transition State
 """
 
 # ╔═╡ 49808249-8a31-475b-9a04-2630545bf4d4
 ### harmonic adsorbates
-for sp ∈ surface_species
-	thermo_corrections[sp] += get_thermal_correction_adsorbate(T, frequencies[sp]) * eV
-	#println("$sp: $(E_f[sp] / eV)")
+function add_harmonic_adsorbate_correction!(thermo_corrections)
+	for sp ∈ surface_species
+		thermo_corrections[sp] += get_thermal_correction_adsorbate(T, frequencies[sp]) * eV
+		#println("$sp: $(E_f[sp] / eV)")
+	end
+	thermo_corrections["COOH-H2O-ele_t"] += (thermo_corrections["COOH_t"] + thermo_corrections["CO_t"]) / 2;
+	nothing
+end
+
+# ╔═╡ 0bacc17c-b53b-41ec-8808-1efb7d413147
+begin
+	thermo_corrections = Dict(zip(keys(E_f), zeros(length(E_f))));
+	add_ideal_gas_correction!(thermo_corrections)
+	add_harmonic_adsorbate_correction!(thermo_corrections)
 end;
-
-# ╔═╡ 6ba520fe-7928-4d4c-8b0c-705af8269739
-md"""
-##### BEB scaling of the Transition State
-"""
-
-# ╔═╡ dd958e98-aab7-489c-a6fc-6261d85fbea4
-thermo_corrections["COOH-H2O-ele_t"] += (thermo_corrections["COOH_t"] + thermo_corrections["CO_t"]) / 2;
 
 # ╔═╡ 58bd5959-c4c9-4351-8852-063743b7a937
 md"""
@@ -310,7 +313,8 @@ where the gap capacitance between the working electrode and the reaction plane (
 electro_correction_params = Dict(
 	"CO2_t"  => [-0.000286600929 / (μA/cm^2)^2, 0.0297720125 / (μA/cm^2)],
 	"COOH_t" => [-9.0295682e-05 / (μA/cm^2)^2, 0.00226896383 / (μA/cm^2)],
-	"CO_t"   => [-0.000189106972 / (μA/cm^2)^2,-0.00942574086 / (μA/cm^2)]
+	"CO_t"   => [-0.000189106972 / (μA/cm^2)^2,-0.00942574086 / (μA/cm^2)],
+	"COOH-H2O-ele_t" => [-9.0295682e-05 / (μA/cm^2)^2, 0.00226896383 / (μA/cm^2)],
 );
 
 # ╔═╡ 77b9a080-7a3b-4835-9d69-afa13eff3757
@@ -332,7 +336,7 @@ function compute_energies_explicit!(G_f, σ, ϕ_we, ϕ, local_pH)
 	electro_corrections["ele_g"] -= (ϕ_we - ϕ) * eV
 	#electro_corrections["COOH-H2O-ele_t"] += (-u[iϕ] + 0.5 * (u[iϕ] - ϕ_pzc)) * eV
 	# Frumking correct: ϕ_we - u[iϕ]
-	electro_corrections["COOH-H2O-ele_t"] -= β * (ϕ_we - ϕ) * eV
+	electro_corrections["COOH-H2O-ele_t"] += (-(ϕ_we - ϕ) + β * (ϕ_we - ϕ - ϕ_pzc)) * eV
 
 
 	## hbond_electrochemical
@@ -341,7 +345,7 @@ function compute_energies_explicit!(G_f, σ, ϕ_we, ϕ, local_pH)
 	electro_corrections["CO_t"] += -0.1 * eV
 
 	## hbond_surface_charge_density
-	for sp in surface_species
+	for sp in [surface_species; transition_state]
 		electro_corrections[sp] += electro_correction_params[sp]' * [σ^2, σ] * eV
 	end
 
@@ -849,7 +853,7 @@ version = "17.4.0+0"
 # ╟─ba894fa1-fba8-40db-9459-7ec78462a246
 # ╠═1f020e47-e4cb-4202-80f7-39421e4ce471
 # ╠═9d4a2505-9c24-4ed2-bf02-f6598f296f11
-# ╠═6120ec04-80c8-423c-a92a-44583ba9bac7
+# ╟─6120ec04-80c8-423c-a92a-44583ba9bac7
 # ╟─8a87380d-20e6-4c27-950b-25003b98bf30
 # ╠═30c7d656-e197-495e-bd71-9c71214d1857
 # ╠═f4e3b67b-ee51-4648-b780-c563557e7ca6
@@ -858,14 +862,12 @@ version = "17.4.0+0"
 # ╟─3b8df1df-1054-417a-b242-4046c99f2d02
 # ╠═c2640ab8-8926-4872-abdf-adc509f56d59
 # ╟─e07cb9fb-f59c-43f1-bcb1-fedc0e1d90f9
-# ╠═c3541e3a-a376-4223-95b5-940b53adbba2
 # ╟─15924d1b-07b9-48b7-bc0f-b2836f391a1d
 # ╠═2758f368-ea18-473d-bfa4-4d65a3c94653
 # ╠═42b0eb6d-21a2-4b88-b09a-42bfc0289c51
 # ╟─befc5723-14b7-4047-ba88-c89bd4815a62
 # ╠═49808249-8a31-475b-9a04-2630545bf4d4
-# ╟─6ba520fe-7928-4d4c-8b0c-705af8269739
-# ╠═dd958e98-aab7-489c-a6fc-6261d85fbea4
+# ╠═0bacc17c-b53b-41ec-8808-1efb7d413147
 # ╟─58bd5959-c4c9-4351-8852-063743b7a937
 # ╠═18966e29-62c4-4e0e-8b96-47ac0e026dc2
 # ╟─77b9a080-7a3b-4835-9d69-afa13eff3757

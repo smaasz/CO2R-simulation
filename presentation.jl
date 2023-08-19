@@ -31,6 +31,7 @@ begin
 	using PyCall
 	using CatmapInterface
 	using ForwardDiff
+	using DataFrames
 end;
 
 # ╔═╡ 92be2111-381e-4260-a514-1632c5a38355
@@ -317,7 +318,8 @@ md"""
 """
 
 # ╔═╡ 4fda1782-4f70-4007-9ac3-12c931c4bd54
-py"""
+begin
+	py"""
 from ase.thermochemistry import HarmonicThermo, IdealGasThermo
 from ase.build import molecule
 
@@ -334,7 +336,11 @@ def get_thermal_correction_ideal_gas(T, frequencies, symmetrynumber, geometry, s
 
     free_energy = H-T*S
     return free_energy
-"""
+	"""
+
+	get_thermal_correction_ideal_gas = py"get_thermal_correction_ideal_gas"
+	get_thermal_correction_adsorbate = py"get_thermal_correction_adsorbate"
+end;
 
 # ╔═╡ 0742ba27-af65-4c9d-b28d-795837185b1b
 md"""
@@ -351,6 +357,7 @@ begin
 	bulk_species        = ["H2_g", "CO2_g", "CO_g", "OH_g", "H2O_g", "ele_g"]
 	surface_species     = ["CO2*_t", "COOH*_t", "CO*_t"]
 	transition_state    = ["COOH-H2O-ele_t"]
+	surface_site 		= ["*_t"]
 end;
 
 # ╔═╡ e59911c0-e234-459b-a6b0-804bee22cb1d
@@ -369,7 +376,8 @@ E_f = Dict(
 	"ele_g" => 0.0 * eV,
 	"OH_g" => 0.0 * eV,
 	"H2O_g" => 0.0 * eV,
-	"H2_g" => 0.0 * eV
+	"H2_g" => 0.0 * eV,
+	"*_t" => 0.0 * eV,
 );
 
 # ╔═╡ 25e1369f-a636-45a2-97fd-5a1f126dc489
@@ -398,9 +406,6 @@ md"""
 The energy calculations hold at 0 K and no excess surface charges. Therefore the energy terms have to be corrected according to the system parameters.
 """
 
-# ╔═╡ d282f793-99f2-4495-84ca-3a0c38fe8661
-thermo_corrections = Dict(zip(keys(E_f), zeros(length(E_f))));
-
 # ╔═╡ 06d28618-e44c-4fd3-9940-3628d6816334
 md"""
 ##### Correction of Bulk Species
@@ -416,31 +421,37 @@ ideal_gas_params = Dict(
 
 # ╔═╡ ec5a8df2-c7a4-4665-982c-021251afdc3a
 ### ideal gases
-for sp in bulk_species
-	if sp ∉ ["OH_g", "ele_g"]
-		thermo_corrections[sp] += py"get_thermal_correction_ideal_gas"(T, frequencies[sp], ideal_gas_params[sp]...) * eV
+function add_ideal_gas_correction!(thermo_corrections)
+	for sp in bulk_species
+		if sp ∉ ["OH_g", "ele_g"]
+			thermo_corrections[sp] += get_thermal_correction_ideal_gas(T, frequencies[sp], ideal_gas_params[sp]...) * eV
+		end
 	end
+	nothing
 end
 
 # ╔═╡ f98e4f84-1b0e-4bd9-a0e3-9b530f8f2afa
 md"""
-##### Correction of Adsorbates
+##### Correction of Adsorbates & BEB scaling of the Transition State
 """
 
 # ╔═╡ 872c20f3-b9c1-40b7-8cc7-10eed29d6e16
 ### harmonic adsorbates
-for sp ∈ surface_species
-	thermo_corrections[sp] += py"get_thermal_correction_adsorbate"(T, frequencies[sp]) * eV
-	#println("$sp: $(E_f[sp] / eV)")
+function add_harmonic_adsorbate_correction!(thermo_corrections)
+	for sp ∈ surface_species
+		thermo_corrections[sp] += get_thermal_correction_adsorbate(T, frequencies[sp]) * eV
+		#println("$sp: $(E_f[sp] / eV)")
+	end
+	thermo_corrections["COOH-H2O-ele_t"] += (thermo_corrections["COOH*_t"] + thermo_corrections["CO*_t"]) / 2
+	nothing
+end
+
+# ╔═╡ e900c3dd-874f-4d27-a01a-587861f69ab1
+begin
+	thermo_corrections = Dict(zip(keys(E_f), zeros(length(E_f))));
+	add_ideal_gas_correction!(thermo_corrections)
+	add_harmonic_adsorbate_correction!(thermo_corrections)
 end;
-
-# ╔═╡ ec7b12e0-e385-4014-b08c-df1ebfbcad29
-md"""
-##### BEB scaling of the Transition State
-"""
-
-# ╔═╡ 977ed0df-69ac-4a9e-8c63-a712107ee1e3
-thermo_corrections["COOH-H2O-ele_t"] += (thermo_corrections["COOH*_t"] + thermo_corrections["CO*_t"]) / 2;
 
 # ╔═╡ 8fac9276-0fa1-4bb8-9cc8-55f9ede5994e
 md"""
@@ -467,7 +478,8 @@ end;
 electro_correction_params = Dict(
 	"CO2*_t"  => [-0.000286600929 / (μA/cm^2)^2, 0.0297720125 / (μA/cm^2)],
 	"COOH*_t" => [-9.0295682e-05 / (μA/cm^2)^2, 0.00226896383 / (μA/cm^2)],
-	"CO*_t"   => [-0.000189106972 / (μA/cm^2)^2,-0.00942574086 / (μA/cm^2)]
+	"CO*_t"   => [-0.000189106972 / (μA/cm^2)^2,-0.00942574086 / (μA/cm^2)],
+	"COOH-H2O-ele_t" => [-9.0295682e-05 / (μA/cm^2)^2, 0.00226896383 / (μA/cm^2)],
 );
 
 # ╔═╡ a0b39948-7364-4709-b0c2-f580797ac2aa
@@ -502,7 +514,7 @@ function compute_rateconstants_explicit!(k, σ, ϕ_we, ϕ, local_pH)
 	electro_corrections["ele_g"] -= (ϕ_we - ϕ) * eV
 	#electro_corrections["COOH-H2O-ele_t"] += (-u[iϕ] + 0.5 * (u[iϕ] - ϕ_pzc)) * eV
 	# Frumking correct: ϕ_we - u[iϕ]
-	electro_corrections["COOH-H2O-ele_t"] -= β * (ϕ_we - ϕ) * eV
+	electro_corrections["COOH-H2O-ele_t"] += (-(ϕ_we - ϕ) + β * (ϕ_we - ϕ - ϕ_pzc)) * eV
 
 
 	## hbond_electrochemical
@@ -511,7 +523,7 @@ function compute_rateconstants_explicit!(k, σ, ϕ_we, ϕ, local_pH)
 	electro_corrections["CO*_t"] += -0.1 * eV
 
 	## hbond_surface_charge_density
-	for sp in surface_species
+	for sp in [surface_species; transition_state]
 		electro_corrections[sp] += electro_correction_params[sp]' * [σ^2, σ] * eV
 	end
 
@@ -522,9 +534,9 @@ function compute_rateconstants_explicit!(k, σ, ϕ_we, ϕ, local_pH)
 	G_OH        = G_H2O - G_H
 
 
-	G_f = Dict(zip([bulk_species; surface_species; transition_state], zeros(Tval, nc + na + length(transition_state))))
+	G_f = Dict(zip([bulk_species; surface_species; transition_state; surface_site], zeros(Tval, nc + na + length(transition_state) + length(surface_site))))
 	
-	for sp in [bulk_species; surface_species; transition_state]
+	for sp in [bulk_species; surface_species; transition_state; surface_site]
 		G_f[sp] += E_f[sp] + thermo_corrections[sp] + electro_corrections[sp]
 	end
 	G_f["OH_g"] += G_OH
@@ -535,7 +547,7 @@ function compute_rateconstants_explicit!(k, σ, ϕ_we, ϕ, local_pH)
 	G_TS = zeros(Tval, 4)
 	
 	# 'CO2_g + 2*_t <-> CO2*_t',	                  #1
-	G_IS[1] = G_f["CO2_g"] + 2 * 0.0
+	G_IS[1] = G_f["CO2_g"] + 2 * G_f["*_t"]
 	G_FS[1] = G_f["CO2*_t"]
 	G_TS[1] = max(G_IS[1], G_FS[1])
 
@@ -552,7 +564,7 @@ function compute_rateconstants_explicit!(k, σ, ϕ_we, ϕ, local_pH)
 
 	# 'COOH*_t + H2O_g + ele_g <-> COOH-H2O-ele_t <-> CO*_t + H2O_g + OH_g + *_t; beta=0.5', #3
 	G_IS[3] = G_f["COOH*_t"] + G_f["H2O_g"] + G_f["ele_g"]
-	G_FS[3] = G_f["CO*_t"] + G_f["H2O_g"] + G_f["OH_g"] + 0.0
+	G_FS[3] = G_f["CO*_t"] + G_f["H2O_g"] + G_f["OH_g"] + G_f["*_t"]
 	G_TS[3] = G_f["COOH-H2O-ele_t"]
 
 	kf[3] = 1.0e13 * exp(-(G_TS[3] - G_IS[3]) / (k_B * T))
@@ -560,11 +572,11 @@ function compute_rateconstants_explicit!(k, σ, ϕ_we, ϕ, local_pH)
 
 	# 'CO*_t <-> CO_g + *_t',	                      #4
 	G_IS[4] = G_f["CO*_t"]
-	G_FS[4] = G_f["CO_g"] + 0.0
+	G_FS[4] = G_f["CO_g"] + G_f["*_t"]
 	G_TS[4] = max(G_IS[4], G_FS[4])
 
-	kf[4] = 1.0e13 * exp(-(G_TS[4] - G_IS[4]) / (k_B * T))
-	kr[4] = 1.0e13 * exp(-(G_TS[4] - G_FS[4]) / (k_B * T))
+	kf[4] = 1.0e8 * exp(-(G_TS[4] - G_IS[4]) / (k_B * T))
+	kr[4] = 1.0e8 * exp(-(G_TS[4] - G_FS[4]) / (k_B * T))
 end;
 
 # ╔═╡ ba1af1f7-8452-4288-900a-d6e305706d73
@@ -703,6 +715,10 @@ function we_breactions(
 	# rates of the elementary reactions
 	rates 	 = zeros(Tval, 4)
 	compute_rates!(rates, u, σ, ϕ_we; mode = rate_const_mode)
+
+	# rates_cmp= zeros(Tval, 4)
+	# compute_rates!(rates_cmp, u, σ, ϕ_we; mode = "Explicit")
+	# @show ForwardDiff.value.(rates) .- ForwardDiff.value.(rates_cmp)
 
 	#println("$(ForwardDiff.value.(rates))")
 	
@@ -913,14 +929,12 @@ save_ivresult(ivresult, rate_const_mode);
 # ╟─25e1369f-a636-45a2-97fd-5a1f126dc489
 # ╠═5814c5ff-ed3d-450a-be5a-c2f1d9dc742c
 # ╟─a4acc450-bcf5-4938-85c2-f82492235890
-# ╠═d282f793-99f2-4495-84ca-3a0c38fe8661
 # ╟─06d28618-e44c-4fd3-9940-3628d6816334
 # ╠═df663eb4-9e27-4ce8-9a93-3b8cd58870c9
 # ╠═ec5a8df2-c7a4-4665-982c-021251afdc3a
 # ╟─f98e4f84-1b0e-4bd9-a0e3-9b530f8f2afa
 # ╠═872c20f3-b9c1-40b7-8cc7-10eed29d6e16
-# ╟─ec7b12e0-e385-4014-b08c-df1ebfbcad29
-# ╠═977ed0df-69ac-4a9e-8c63-a712107ee1e3
+# ╠═e900c3dd-874f-4d27-a01a-587861f69ab1
 # ╟─8fac9276-0fa1-4bb8-9cc8-55f9ede5994e
 # ╠═4e0d3004-acaf-4098-b123-b378c03fbe99
 # ╠═0570d57c-5edb-41d2-a2a4-d0d2b4abe778
