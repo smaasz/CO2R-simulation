@@ -16,7 +16,8 @@ begin
 	using DataFrames
 	using Printf
 	using PlutoUI, HypertextLiteral
-	using MethodAnalysis, Cthulhu
+	using MethodAnalysis
+	using PyCall
 end;
 
 # ╔═╡ 7c8f9910-5e3d-49be-ac20-7e7fbc3447b3
@@ -40,6 +41,7 @@ md"""
 # ╔═╡ 0dfbc50d-e86d-44e7-9627-56a8559feaa3
 begin
 	@phconstants N_A c_0 k_B e h
+	const F = N_A * e
 
 	# geometrical constants
 	const hmin 		= 1.0e-6 	* μm
@@ -124,7 +126,7 @@ const gases = DataFrame(
 
 # ╔═╡ 3c621d28-b568-4ece-bac0-a8abde8a83cd
 const adsorbates = DataFrame(
-	:name 		 => ["CO₂ " 	, "COOH" 	 , "CO"],
+	:name 		 => ["CO₂_t" 	, "COOH_t" 	 , "CO_t"],
 	:energy 	 => [0.657600203, 0.128214079, -0.02145440850567823] .* eV,
 	:frequencies => [
 		[136.85, 183.6, 212.95, 250.7, 306.0, 510.55, 562.25, 1176.05, 1889.85] * h / cm / eV * c_0,
@@ -141,14 +143,46 @@ const adsorbates = DataFrame(
 
 # ╔═╡ 197556d5-198c-479d-becf-4299d924ea58
 const transition_states = DataFrame(
-	:name => ["COOH-H2O-ele"],
+	:name => ["COOH-H₂O-e⁻_t"],
 	:energy => [0.95] .* eV,
 	:frequencies => [Float64[]],
 	:echem_params => [[-9.0295682e-05 / (μA/cm^2)^2, 0.00226896383 / (μA/cm^2)]],
 )
 
+# ╔═╡ b96e4b1c-c2a8-4a1c-b126-42e65e8aeaf0
+const surfaces = DataFrame(
+	:name => ["_t"],
+	:energy => [0.0] .* eV,
+)
+
+# ╔═╡ 42fc20b8-cc68-4252-917b-589d246292c8
+const fictious = DataFrame(
+	:name => ["OH⁻", "e⁻"], 
+	:energy => [0.0, 0.0], 
+	:frequencies => [Float64[], Float64[]]
+)
+
 # ╔═╡ cd96a29a-cfa3-47f3-a512-41a9be02a162
-const thermo_corrections = zeros(nc + na + 1)
+const thermo_corrections = let
+	ngases 		= nrow(gases)
+	nadsorbates = nrow(adsorbates)
+	ntransition = nrow(transition_states)
+	nsurfaces 	= nrow(surfaces)
+	nfictious 	= nrow(fictious)
+	ntotal 		= ngases + nadsorbates + ntransition + nsurfaces + nfictious
+	Dict(zip(
+		[gases.name; adsorbates.name; transition_states.name; surfaces.name; fictious.name], zeros(ntotal)
+	))
+end
+
+# ╔═╡ 8c6dd829-988f-43f5-b8d0-47419a2a0a2e
+const energies = let
+	dicts = []
+	for df in [gases, adsorbates, transition_states, fictious]
+		push!(dicts, Dict(name => energy for (; name, energy) in eachrow(df)))
+	end
+	merge(dicts...)
+end
 
 # ╔═╡ e7f1f471-2870-4301-a995-a2cb69641715
 md"""
@@ -261,32 +295,6 @@ with the transition state: $*CO-OH^{TS}$
 $*CO_{(ad)} \rightleftharpoons CO_{(aq)} + *$
 """
 
-# ╔═╡ 827c1a21-e711-4d67-b3a9-3026e69b60d9
-function we_breactions(
-	f, 
-	u::VoronoiFVM.BNodeUnknowns{Tval, Tv, Tc, Tp, Ti}, 
-	bnode, 
-	data
-) where {Tval, Tv, Tc, Tp, Ti}
-	
-	(; iϕ, ϕ_we) = data
-
-	σ = C_gap * (ϕ_we - u[iϕ] - ϕ_pzc)
-	# rates of the elementary reactions
-	# !!! Note: use PreallocationTools.jl to make non-allocating
-	rates = zeros(Tval, 4)
-	compute_rates!(rates, u, σ, ϕ_we)
-	# bulk species
-	f[ico] 		+= -rates[4] * S
-	f[ico2] 	+= rates[1] * S
-	f[iohminus] += -rates[2] * S - rates[3] * S
-	
-	# surface species
-	f[ico2_t]  += -rates[1] + rates[2]
-	f[ico_t]   += -rates[3] + rates[4]
-	f[icooh_t] += -rates[2] + rates[3]
-end;
-
 # ╔═╡ c84b1c29-dca5-4e86-9bb5-d59b4a7c0705
 md"""
 ##### Reaction Rates
@@ -297,6 +305,12 @@ md"""
 For the calculation of the reaction rates a __mean field approach__ based is applied.
 
 The acitivities of H₂O and e⁻ are set to be zero. The dependence on the rates on the applied voltage and surface charges are contained in the reaction rate constants.
+
+The surface charging relation $σ = σ(U)$ is given by the Robin boundary condition
+
+$σ(U) = C_{gap} (ϕ_{we} - ϕ_{pzc} - ϕ^\ddagger)$
+
+where the gap capacitance between the working electrode and the reaction plane ($\ddagger$) is given by $C_{gap} = 20~μF/cm^2$. The potential of zero current is measured to be $ϕ_{pzc} = 0.16~V$.
 
 __Question is the pH-dependence only in the reaction rate constants (i.e. activity of OH⁻ must be set to 0)?__
 """
@@ -311,85 +325,376 @@ md"""
 Only the third reaction is assumed to pass through an activated transition state. An Arrhenius relation is assumed with pre-exponential factors of 10¹³ and 10⁸ for the first three reactions and the last reaction (desoprtion of CO) respectively.
 """
 
-# ╔═╡ 5927b7f2-f894-4db9-9eaa-fe29233f1194
-function compute_rateconstants_explicit!(k, σ, ϕ_we, ϕ, local_pH)
-	(kf, kr) = k
+# ╔═╡ d811f86a-2871-4c05-9596-17ae027eddd6
+function add_simple_electrochem_corrections!(electro_corrections, ϕ_we, ϕ)
 	β = 0.5 # hack
-	
-	Tval = eltype(kf)
-	
-	# compute corrections due to surface charge densities
-	electro_corrections = Dict(zip(keys(E_f), zeros(Tval, length(E_f))))
-
-	## simple_electrochemical
-	#electro_corrections["ele_g"] -= (ϕ_we - (ϕ_we - u[iϕ])) * eV
-	electro_corrections["ele_g"] -= (ϕ_we - ϕ) * eV
-	#electro_corrections["COOH-H2O-ele_t"] += (-u[iϕ] + 0.5 * (u[iϕ] - ϕ_pzc)) * eV
+	electro_corrections["e⁻"] -= (ϕ_we - ϕ) * eV
 	# Frumking correct: ϕ_we - u[iϕ]
-	electro_corrections["COOH-H2O-ele_t"] += (-(ϕ_we - ϕ) + β * (ϕ_we - ϕ - ϕ_pzc)) * eV
+	electro_corrections["COOH-H₂O-e⁻_t"] += (-(ϕ_we - ϕ) + β * (ϕ_we - ϕ - ϕ_pzc)) * eV
+	nothing
+end
 
-
+# ╔═╡ 2243d237-c57e-4e77-88bb-1a06c92e3a3e
+function add_hbond_corrections!(electro_corrections)
 	## hbond_electrochemical
-	electro_corrections["COOH*_t"] += -0.25 * eV
-	electro_corrections["CO2*_t"] += 0.0 * eV
-	electro_corrections["CO*_t"] += -0.1 * eV
+	electro_corrections["COOH_t"] += -0.25 * eV
+	electro_corrections["CO₂_t"] += 0.0 * eV
+	electro_corrections["CO_t"] += -0.1 * eV
+end
 
+# ╔═╡ 4deceb97-3249-4222-97db-a138932b15f3
+md"""
+The free energies $ΔG_f$ of the surface species are corrected according to the (excess) surface charge density $σ$ by a fitted quadratic model:
+
+$ΔG_f(σ) = a_σ~σ + b_σ~σ^2$
+"""
+
+# ╔═╡ 995ae643-c14a-4b82-a1d2-40c363a89cc4
+function add_hbond_surface_charge_corrections!(electro_corrections, σ)
 	## hbond_surface_charge_density
-	for sp in [surface_species; transition_state]
-		electro_corrections[sp] += electro_correction_params[sp]' * [σ^2, σ] * eV
+	for (; name, echem_params) in eachrow(adsorbates)
+		electro_corrections[name] += echem_params' * [σ^2, σ] * eV
 	end
+end
 
+# ╔═╡ 1a0866fa-b883-43ba-8507-3d53ff4172c2
+function add_pH_correction!(electro_corrections, thermo_corrections, local_pH)
 	## _get_echem_corrections
-	G_H2O       = E_f["H2O_g"] + thermo_corrections["H2O_g"]
-	G_H2        = E_f["H2_g"] + thermo_corrections["H2_g"]
+	gases_by_name = groupby(gases, :name)
+	G_H2O       = energies["H₂O"] + thermo_corrections["H₂O"]
+	G_H2        = energies["H₂"] + thermo_corrections["H₂"]
 	G_H         = 0.5 * G_H2 - .0592 * local_pH / 298.14 * T * eV
 	G_OH        = G_H2O - G_H
+	electro_corrections["OH⁻"] += G_OH
+end
 
+# ╔═╡ 7bb14158-a380-4101-82fc-13b1bd850c0b
+md"""
+The Gibbs free energy of the elementary reactions.
+"""
 
-	G_f = Dict(zip([bulk_species; surface_species; transition_state; surface_site], zeros(Tval, nc + na + length(transition_state) + length(surface_site))))
+# ╔═╡ d4509d2a-45ca-4d53-ba78-6839f0bdf049
+md"""
+### Nernst-Planck Half-Cell
+"""
+
+# ╔═╡ f694ef00-5c56-4323-8fe4-b12941c4ab4b
+grid = let
+	X = geomspace(0, L, hmin, hmax)
+	simplexgrid(X)
+end
+
+# ╔═╡ 9224eb94-9415-4b87-849a-def11e382ab5
+celldata = ElectrolyteData(;nc    = nc,
+						  	na    = na,
+						  	z     = bulk[!, :z],
+						  	D     = bulk[!, :D],
+						  	T     = T,
+						  	eneutral=false,
+						  	κ     = bulk[!, :κ],
+                            c_bulk= bulk[!, :c_bulk],
+						  	Γ_we  = Γ_we,
+						  	Γ_bulk= Γ_bulk,
+						  	scheme= scheme);
+
+# ╔═╡ d434d5fd-0362-45c6-adff-13ba7ea6d847
+md"""
+## Results
+"""
+
+# ╔═╡ 456d8645-3a17-4ea1-b9ec-6479e51650a5
+md"""
+### Plotting Functions
+"""
+
+# ╔═╡ 07215442-8bfa-4c13-b271-659ecdb1de91
+begin
+	function addplot(vis, sol, vshow)
+		species = bulk.name
+		colors = [:orange, :brown, :violet, :red, :blue, :green, :gray]
+		
+		scale = 1.0 / (mol / dm^3)
+	    title = @sprintf("Φ_we=%+1.2f", vshow)
 	
-	for sp in [bulk_species; surface_species; transition_state; surface_site]
-		G_f[sp] += E_f[sp] + thermo_corrections[sp] + electro_corrections[sp]
+		if useonly_pH
+			scalarplot!(vis, 
+					    grid.components[XCoordinates] .+ 1.0e-14, 
+					    log10.(sol[ihplus, :] * scale), 
+					    color = colors[7],
+					    label = species[7],
+					    clear = true,
+						title = title)
+		else
+			scalarplot!(vis, 
+						grid.components[XCoordinates] .+ 1.0e-14, 
+						log10.(sol[1, :] * scale), 
+						color = colors[1],
+						label = species[1],
+						clear = true,
+						title = title)
+			for ia = 2:nc			
+				scalarplot!(vis, 
+						    grid.components[XCoordinates] .+ 1.0e-14, 
+						    log10.(sol[ia, :] * scale), 
+						    color = colors[ia],
+						    label = species[ia],
+						    clear = false,)
+			end
+		end
 	end
-	G_f["OH_g"] += G_OH
 
-	# rate constants
-	G_IS = zeros(Tval, 4)
-	G_FS = zeros(Tval,4)
-	G_TS = zeros(Tval, 4)
+	function addplot(vis, df)
+		
+		function extract_interpolation(df, i)
+			X = collect(skipmissing(df[!, 2*i-1]))
+			I = sortperm(X)
+			X .= X[I]
+			Y = collect(skipmissing(df[!, 2*i]))[I]
+			linear_interpolation(X, Y, extrapolation_bc=Line())
+		end
+		
+		species = bulk.name
+		colors = [:orange, :brown, :violet, :red, :blue, :green, :gray]
+
+		knots = grid.components[XCoordinates] .+ 1.0e-14
+		sol = [extract_interpolation(df, i) for i in 1:nc]
+		
+		if useonly_pH
+			scalarplot!(vis, 
+					    knots, 
+					    log10.(sol[7].(knots)), 
+					    color = colors[7],
+					    clear = false,
+						linewidth = 0,
+						label = "",
+						markershape = :cross,
+						markersize = 8,
+						markevery = 20)
+		else
+			for ia = 1:nc			
+				scalarplot!(vis, 
+						    knots, 
+						    log10.(sol[ia].(knots)), 
+						    color = colors[ia],
+						    clear = false,
+							linewidth = 0,
+							label = "",
+							markershape = :cross,
+							markersize = 8,
+							markevery = 20)
+			end
+		end
+	end
+
+	function plot1d(result, celldata, vshow; df_compare = nothing)
+		tsol 	= LiquidElectrolytes.voltages_solutions(result)
+		vis 	= GridVisualizer(;
+								 size 	= (600, 300),
+								 clear 	= true,
+								 legend 	= :rt,
+								 limits 	= (-14, 2),
+								 xlimits    = (10e-12, 80 * μm),
+								 xlabel 	= "Distance from electrode [m]",
+	 							 ylabel 	= "log c(aᵢ)", 
+								 xscale 	= :log,)
+	    addplot(vis, tsol(vshow), vshow)
+		if !isnothing(df_compare)
+			addplot(vis, df_compare)
+		end
+		reveal(vis)
+	end
+
+	function plot1d(result, celldata)
+    	tsol  	= LiquidElectrolytes.voltages_solutions(result)
+		vis  	= GridVisualizer(; 
+								 size 	= (600, 300),
+								 clear 	= true,
+							 	 legend = :rt,
+								 limits = (-14, 2),
+								 xlimits= (10e-12, 80 * μm),
+								 xlabel = "Distance from electrode [m]",
+ 								 ylabel = "log c(aᵢ)", 
+								 xscale = :log,)
 	
-	# 'CO2_g + 2*_t <-> CO2*_t',	                  #1
-	G_IS[1] = G_f["CO2_g"] + 2 * G_f["*_t"]
-	G_FS[1] = G_f["CO2*_t"]
-	G_TS[1] = max(G_IS[1], G_FS[1])
+		vrange = result.voltages[1:5:end]
+		movie(vis, file="concentrations.gif", framerate=6) do vis
+		for vshow_it in vrange
+			addplot(vis, tsol(vshow_it), vshow_it)
+			reveal(vis)
+		end
+		end
+		isdefined(Main, :PlutoRunner) && LocalResource("concentrations.gif")
+	end
+end
 
-	kf[1] = 1.0e13 * exp(-(G_TS[1] - G_IS[1]) / (k_B * T))
-	kr[1] = 1.0e13 * exp(-(G_TS[1] - G_FS[1]) / (k_B * T))
 
-	# 'CO2*_t + H2O_g + ele_g <-> COOH*_t + OH_g',  #2            
-	G_IS[2] = G_f["CO2*_t"] + G_f["H2O_g"] + G_f["ele_g"]
-	G_FS[2] = G_f["COOH*_t"] + G_f["OH_g"]
-	G_TS[2] = max(G_IS[2], G_FS[2])
+# ╔═╡ cc72a7e0-b106-4607-bc3e-21e00ae29808
+begin
+	curr(J, ix) = [F * j[ix] for j in J]
+	
+	function plotcurr(result)
+	    scale = 1 / (mol / dm^3)
+	    volts = result.voltages
+	    vis = GridVisualizer(;
+	                         size = (600, 300),
+	                         tilte = "IV Curve",
+	                         xlabel = "Φ_WE/V",
+	                         ylabel = "I",
+	                         legend = :lt)
+	    scalarplot!(vis,
+	                volts,
+	                curr(result.j_bulk, ihplus);
+	                linestyle = :dash,
+	                label = "H+, bulk",
+	                color = :red)
+	    scalarplot!(vis,
+	                volts,
+	                curr(result.j_we, ihplus);
+	                color = :red,
+	                clear = false,
+	                linestyle = :solid,
+	                label = "H+, we")
+	
+	    scalarplot!(vis,
+	                volts,
+	                curr(result.j_bulk, iohminus);
+	                linestyle = :dash,
+	                label = "O2, bulk",
+	                color = :green,
+	                clear = false)
+	    scalarplot!(vis,
+	                volts,
+	                curr(result.j_we, iohminus);
+	                color = :green,
+	                clear = false,
+	                linestyle = :solid,
+	                label = "O2, we")
+	    reveal(vis)
+	end
+end
 
-	kf[2] = 1.0e13 * exp(-(G_TS[2] - G_IS[2]) / (k_B * T))
-	kr[2] = 1.0e13 * exp(-(G_TS[2] - G_FS[2]) / (k_B * T))
+# ╔═╡ d4038b83-1174-4a73-a73d-ff780be1f130
+md"""
+## Some help from Python
+"""
 
-	# 'COOH*_t + H2O_g + ele_g <-> COOH-H2O-ele_t <-> CO*_t + H2O_g + OH_g + *_t; beta=0.5', #3
-	G_IS[3] = G_f["COOH*_t"] + G_f["H2O_g"] + G_f["ele_g"]
-	G_FS[3] = G_f["CO*_t"] + G_f["H2O_g"] + G_f["OH_g"] + G_f["*_t"]
-	G_TS[3] = G_f["COOH-H2O-ele_t"]
+# ╔═╡ dd66290f-45b6-4947-9e10-3273aa93dd03
+begin
+	py"""
+from ase.thermochemistry import HarmonicThermo, IdealGasThermo
+from ase.build import molecule
 
-	kf[3] = 1.0e13 * exp(-(G_TS[3] - G_IS[3]) / (k_B * T))
-	kr[3] = 1.0e13 * exp(-(G_TS[3] - G_FS[3]) / (k_B * T))
+def get_thermal_correction_adsorbate(T, frequencies):
+    thermo = HarmonicThermo(frequencies)
+    return thermo.get_helmholtz_energy(T, verbose=False)
 
-	# 'CO*_t <-> CO_g + *_t',	                      #4
-	G_IS[4] = G_f["CO*_t"]
-	G_FS[4] = G_f["CO_g"] + G_f["*_t"]
-	G_TS[4] = max(G_IS[4], G_FS[4])
 
-	kf[4] = 1.0e8 * exp(-(G_TS[4] - G_IS[4]) / (k_B * T))
-	kr[4] = 1.0e8 * exp(-(G_TS[4] - G_FS[4]) / (k_B * T))
+
+def get_thermal_correction_ideal_gas(T, frequencies, symmetrynumber, geometry, spin, name):
+    thermo = IdealGasThermo(frequencies, geometry, atoms=molecule(name), symmetrynumber=symmetrynumber, spin=spin) 
+    H = thermo.get_enthalpy(T, verbose=False)
+    S = thermo.get_entropy(T, 1.0e5, verbose=False)
+
+    free_energy = H-T*S
+    return free_energy
+	"""
+
+	get_thermal_correction_ideal_gas = py"get_thermal_correction_ideal_gas"
+	get_thermal_correction_adsorbate = py"get_thermal_correction_adsorbate"
 end;
+
+# ╔═╡ 800d0e92-a02c-431a-93a0-c3980bc0212a
+function add_ideal_gas_correction!(thermo_corrections)
+	for (; name,frequencies,symmetrynumber,geometry,spin,components) in eachrow(gases)
+		if name ∉ ["OH⁻", "e⁻"]
+			thermo_corrections[name] += get_thermal_correction_ideal_gas(
+				T, frequencies, symmetrynumber, geometry, spin, components
+			) * eV
+		end
+	end
+	nothing
+end
+
+# ╔═╡ 92342b34-1ab6-4194-8b16-46772d138ded
+function add_harmonic_adsorbate_correction!(thermo_corrections)
+	for (; name, frequencies) in eachrow(adsorbates)
+		thermo_corrections[name] += get_thermal_correction_adsorbate(T, frequencies) * eV
+		#println("$sp: $(E_f[sp] / eV)")
+	end
+	thermo_corrections["COOH-H₂O-e⁻_t"] += (thermo_corrections["COOH_t"] + thermo_corrections["CO_t"]) / 2
+	nothing
+end
+
+# ╔═╡ 5927b7f2-f894-4db9-9eaa-fe29233f1194
+begin
+	for sp in keys(thermo_corrections)
+		thermo_corrections[sp] = 0.0
+	end
+	add_ideal_gas_correction!(thermo_corrections)
+	add_harmonic_adsorbate_correction!(thermo_corrections)
+	
+	function compute_rateconstants_explicit!(
+		k::Tuple{Vector{Tval}, Vector{Tval}}, 
+		σ, 
+		ϕ_we, 
+		ϕ, 
+		local_pH
+	) where Tval
+		(kf, kr) = k
+		Gf = Dict(zip(
+			keys(thermo_corrections), zeros(Tval, length(thermo_corrections))
+		))
+	
+		add_simple_electrochem_corrections!(Gf, ϕ_we, ϕ)
+		add_hbond_corrections!(Gf)
+		add_hbond_surface_charge_corrections!(Gf, σ)
+		add_pH_correction!(Gf, thermo_corrections, local_pH)
+	
+		for species in [gases, adsorbates, transition_states, surfaces, fictious]
+			for (; name, energy) in eachrow(species)
+				Gf[name] += energy + thermo_corrections[name]
+			end
+		end	
+	
+		# !!! Note: use PreallocationTools.jl to make non-allocating
+		# rate constants
+		G_IS = zeros(Tval, 4)
+		G_FS = zeros(Tval,4)
+		G_TS = zeros(Tval, 4)
+		
+		# 'CO2_g + 2*_t <-> CO2*_t',	                  #1
+		G_IS[1] = Gf["CO₂"] + 2 * Gf["_t"]
+		G_FS[1] = Gf["CO₂_t"]
+		G_TS[1] = max(G_IS[1], G_FS[1])
+	
+		kf[1] = 1.0e13 * exp(-(G_TS[1] - G_IS[1]) / (k_B * T))
+		kr[1] = 1.0e13 * exp(-(G_TS[1] - G_FS[1]) / (k_B * T))
+	
+		# 'CO2*_t + H2O_g + ele_g <-> COOH*_t + OH_g',  #2            
+		G_IS[2] = Gf["CO₂_t"] + Gf["H₂O"] + Gf["e⁻"]
+		G_FS[2] = Gf["COOH_t"] + Gf["OH⁻"]
+		G_TS[2] = max(G_IS[2], G_FS[2])
+	
+		kf[2] = 1.0e13 * exp(-(G_TS[2] - G_IS[2]) / (k_B * T))
+		kr[2] = 1.0e13 * exp(-(G_TS[2] - G_FS[2]) / (k_B * T))
+	
+		# 'COOH*_t + H2O_g + ele_g <-> COOH-H2O-ele_t <-> CO*_t + H2O_g + OH_g + *_t; beta=0.5', #3
+		G_IS[3] = Gf["COOH_t"] + Gf["H₂O"] + Gf["e⁻"]
+		G_FS[3] = Gf["CO_t"] + Gf["H₂O"] + Gf["OH⁻"] + Gf["_t"]
+		G_TS[3] = Gf["COOH-H₂O-e⁻_t"]
+	
+		kf[3] = 1.0e13 * exp(-(G_TS[3] - G_IS[3]) / (k_B * T))
+		kr[3] = 1.0e13 * exp(-(G_TS[3] - G_FS[3]) / (k_B * T))
+	
+		# 'CO*_t <-> CO_g + *_t',	                      #4
+		G_IS[4] = Gf["CO_t"]
+		G_FS[4] = Gf["CO"] + Gf["_t"]
+		G_TS[4] = max(G_IS[4], G_FS[4])
+	
+		kf[4] = 1.0e8 * exp(-(G_TS[4] - G_IS[4]) / (k_B * T))
+		kr[4] = 1.0e8 * exp(-(G_TS[4] - G_FS[4]) / (k_B * T))
+	end
+end
 
 # ╔═╡ a3bee8cc-8736-4e69-b5e3-3694080520dd
 function compute_rates_explicit!(
@@ -422,35 +727,31 @@ function compute_rates_explicit!(
 	nothing
 end;
 
-# ╔═╡ 7bb14158-a380-4101-82fc-13b1bd850c0b
-md"""
-The Gibbs free energy of the elementary reactions.
-"""
+# ╔═╡ 827c1a21-e711-4d67-b3a9-3026e69b60d9
+function we_breactions(
+	f, 
+	u::VoronoiFVM.BNodeUnknowns{Tval, Tv, Tc, Tp, Ti}, 
+	bnode, 
+	data
+) where {Tval, Tv, Tc, Tp, Ti}
+	
+	(; iϕ, ϕ_we) = data
 
-# ╔═╡ 800d0e92-a02c-431a-93a0-c3980bc0212a
-function add_ideal_gas_correction!(thermo_corrections)
-	for sp in bulk_species
-		if sp ∉ ["OH_g", "ele_g"]
-			thermo_corrections[sp] += get_thermal_correction_ideal_gas(T, frequencies[sp], ideal_gas_params[sp]...) * eV
-		end
-	end
-	nothing
-end
-
-# ╔═╡ 92342b34-1ab6-4194-8b16-46772d138ded
-function add_harmonic_adsorbate_correction!(thermo_corrections)
-	for sp ∈ surface_species
-		thermo_corrections[sp] += get_thermal_correction_adsorbate(T, frequencies[sp]) * eV
-		#println("$sp: $(E_f[sp] / eV)")
-	end
-	thermo_corrections["COOH-H2O-ele_t"] += (thermo_corrections["COOH*_t"] + thermo_corrections["CO*_t"]) / 2
-	nothing
-end
-
-# ╔═╡ d4509d2a-45ca-4d53-ba78-6839f0bdf049
-md"""
-### Half-Cell
-"""
+	σ = C_gap * (ϕ_we - u[iϕ] - ϕ_pzc)
+	# rates of the elementary reactions
+	# !!! Note: use PreallocationTools.jl to make non-allocating
+	rates = zeros(Tval, 4)
+	compute_rates_explicit!(rates, u, σ, ϕ_we)
+	# bulk species
+	f[ico] 		+= -rates[4] * S
+	f[ico2] 	+= rates[1] * S
+	f[iohminus] += -rates[2] * S - rates[3] * S
+	
+	# surface species
+	f[ico2_t]  += -rates[1] + rates[2]
+	f[ico_t]   += -rates[3] + rates[4]
+	f[icooh_t] += -rates[2] + rates[3]
+end;
 
 # ╔═╡ a0512c28-3c45-451e-998a-cf5be1d871ba
 function halfcellbc(
@@ -468,12 +769,33 @@ function halfcellbc(
 	boundary_robin!(f, u, bnode, iϕ, Γ_we, C_gap , C_gap * (ϕ_we - ϕ_pzc))
 
 	if bnode.region == Γ_we
-		if allow_surfacereactions
 			we_breactions(f, u, bnode, data)
-		end
 	end
 	nothing
 end;
+
+# ╔═╡ 30f55940-f223-43ff-b564-b166f2f8b353
+function simulate_CO2R(grid, celldata; voltages = (-1.5:0.1:-0.0) * V, kwargs...)
+    defaults = (; 	max_round 	= 3,
+              		tol_round 	= 1.0e-9,
+              		verbose 	= "e",
+              		reltol 		= 1.0e-8,
+              		tol_mono 	= 1.0e-10)
+    kwargs 	= merge(defaults, kwargs) 
+    cell        = PNPSystem(grid; bcondition=halfcellbc, reaction=reaction, celldata)
+	ivresult    = ivsweep(cell; voltages, store_solutions=true, kwargs...)
+
+	cell, ivresult
+end;
+
+# ╔═╡ 9164eabd-e65f-4ed2-b953-b3edd6cb034a
+result = simulate_CO2R(grid, celldata);
+
+# ╔═╡ 3ebcf10e-f8f1-471b-be6f-0aaedfa2da01
+plotcurr(result)
+
+# ╔═╡ 2a85e0d6-239c-4cba-af6e-1f1bcb7f8a57
+plot1d(result, celldata)
 
 # ╔═╡ 8f017a97-a47f-4f54-ad87-94808b708366
 TableOfContents(title="📚 Table of Contents", indent=true, depth=4, aside=true)
@@ -523,7 +845,6 @@ hrule()
 PLUTO_PROJECT_TOML_CONTENTS = """
 [deps]
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
-Cthulhu = "f68482b8-f384-11e8-15f7-abe071a5a75f"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 ExtendableGrids = "cfc395e8-590f-11e8-1f13-43a2532b2fa8"
 GridVisualize = "5eed8a63-0fb0-45eb-886d-8d5a387d12b8"
@@ -534,11 +855,11 @@ MethodAnalysis = "85b6ec6f-f7df-4429-9514-a64bcd9ee824"
 Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
 PlutoUI = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+PyCall = "438e738f-606a-5dbb-bf0a-cddfbfd45ab0"
 VoronoiFVM = "82b139dc-5afc-11e9-35da-9b9bdfd336f3"
 
 [compat]
 CairoMakie = "~0.10.8"
-Cthulhu = "~2.9.2"
 DataFrames = "~1.6.1"
 ExtendableGrids = "~1.1.0"
 GridVisualize = "~1.1.4"
@@ -547,6 +868,7 @@ LessUnitful = "~0.6.1"
 LiquidElectrolytes = "~0.2.1"
 MethodAnalysis = "~0.4.13"
 PlutoUI = "~0.7.52"
+PyCall = "~1.96.1"
 VoronoiFVM = "~1.13.2"
 """
 
@@ -556,7 +878,7 @@ PLUTO_MANIFEST_TOML_CONTENTS = """
 
 julia_version = "1.10.0-beta1"
 manifest_format = "2.0"
-project_hash = "f6ed4e4cbbc5728326015d65e5cb163eb34d0106"
+project_hash = "4c796bc6b50c8bba9038eb1a3e2cf3aa5b46d0cc"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "f5c25e8a5b29b5e941b7408bc8cc79fea4d9ef9a"
@@ -769,12 +1091,6 @@ git-tree-sha1 = "70232f82ffaab9dc52585e0dd043b5e0c6b714f1"
 uuid = "fb6a15b2-703c-40df-9091-08a04967cfa9"
 version = "0.1.12"
 
-[[deps.CodeTracking]]
-deps = ["InteractiveUtils", "UUIDs"]
-git-tree-sha1 = "a1296f0fe01a4c3f9bf0dc2934efbf4416f5db31"
-uuid = "da1fd8a2-8d9e-5ec2-8556-3022fb5608a2"
-version = "1.3.4"
-
 [[deps.CodecZlib]]
 deps = ["TranscodingStreams", "Zlib_jll"]
 git-tree-sha1 = "02aa26a4cf76381be7f66e020a3eddeb27b0a092"
@@ -847,6 +1163,12 @@ git-tree-sha1 = "02d2316b7ffceff992f3096ae48c7829a8aa0638"
 uuid = "b152e2b5-7a66-4b01-a709-34e65c35f657"
 version = "0.1.3"
 
+[[deps.Conda]]
+deps = ["Downloads", "JSON", "VersionParsing"]
+git-tree-sha1 = "8c86e48c0db1564a1d49548d3515ced5d604c408"
+uuid = "8f4d0f93-b110-5947-807f-2305c1781a2d"
+version = "1.9.1"
+
 [[deps.ConstructionBase]]
 deps = ["LinearAlgebra"]
 git-tree-sha1 = "fe2838a593b5f776e1597e086dcd47560d94e816"
@@ -873,12 +1195,6 @@ version = "0.3.1"
 git-tree-sha1 = "249fe38abf76d48563e2f4556bebd215aa317e15"
 uuid = "a8cc5b0e-0ffa-5ad4-8c14-923d3ee1735f"
 version = "4.1.1"
-
-[[deps.Cthulhu]]
-deps = ["CodeTracking", "FoldingTrees", "InteractiveUtils", "JuliaSyntax", "PrecompileTools", "Preferences", "REPL", "TypedSyntax", "UUIDs", "Unicode", "WidthLimitedIO"]
-git-tree-sha1 = "a086f0e6bad863055df8aca3dc3786505d5cf06c"
-uuid = "f68482b8-f384-11e8-15f7-abe071a5a75f"
-version = "2.9.2"
 
 [[deps.DataAPI]]
 git-tree-sha1 = "8da84edb865b0b5b0100c0666a9bc9a0b71c553c"
@@ -1129,12 +1445,6 @@ deps = ["Statistics"]
 git-tree-sha1 = "335bfdceacc84c5cdf16aadc768aa5ddfc5383cc"
 uuid = "53c48c17-4a7d-5ca2-90c5-79b7896eea93"
 version = "0.8.4"
-
-[[deps.FoldingTrees]]
-deps = ["AbstractTrees", "REPL"]
-git-tree-sha1 = "d94efd85f2fe192cdf664aa8b7c431592faed59e"
-uuid = "1eca21be-9b9b-4ed8-839a-6d8ae26b1781"
-version = "1.2.1"
 
 [[deps.Fontconfig_jll]]
 deps = ["Artifacts", "Bzip2_jll", "Expat_jll", "FreeType2_jll", "JLLWrappers", "Libdl", "Libuuid_jll", "Pkg", "Zlib_jll"]
@@ -1478,11 +1788,6 @@ deps = ["Artifacts", "JLLWrappers", "Libdl"]
 git-tree-sha1 = "6f2675ef130a300a112286de91973805fcc5ffbc"
 uuid = "aacddb02-875f-59d6-b918-886e6ef4fbf8"
 version = "2.1.91+0"
-
-[[deps.JuliaSyntax]]
-git-tree-sha1 = "d080fa670adde72509d03d91bf6ce6da2addb4be"
-uuid = "70703baa-626e-46a2-a12c-08ffd08c73b4"
-version = "0.4.6"
 
 [[deps.KLU]]
 deps = ["LinearAlgebra", "SparseArrays", "SuiteSparse_jll"]
@@ -2104,6 +2409,12 @@ git-tree-sha1 = "d7a7aef8f8f2d537104f170139553b14dfe39fe9"
 uuid = "92933f4c-e287-5a05-a399-4b506db050ca"
 version = "1.7.2"
 
+[[deps.PyCall]]
+deps = ["Conda", "Dates", "Libdl", "LinearAlgebra", "MacroTools", "Serialization", "VersionParsing"]
+git-tree-sha1 = "43d304ac6f0354755f1d60730ece8c499980f7ba"
+uuid = "438e738f-606a-5dbb-bf0a-cddfbfd45ab0"
+version = "1.96.1"
+
 [[deps.QOI]]
 deps = ["ColorTypes", "FileIO", "FixedPointNumbers"]
 git-tree-sha1 = "18e8f4d1426e965c7b532ddd260599e1510d26ce"
@@ -2614,12 +2925,6 @@ git-tree-sha1 = "3c712976c47707ff893cf6ba4354aa14db1d8938"
 uuid = "9d95972d-f1c8-5527-a6e0-b4b365fa01f6"
 version = "1.3.0"
 
-[[deps.TypedSyntax]]
-deps = ["CodeTracking", "JuliaSyntax"]
-git-tree-sha1 = "e38949656d1443d30339d4fc1088fdc49c8f652e"
-uuid = "d265eb64-f81a-44ad-a842-4247ee1503de"
-version = "1.2.1"
-
 [[deps.URIs]]
 git-tree-sha1 = "b7a5e99f24892b6824a954199a45e9ffcc1c70f0"
 uuid = "5c2747f8-b7ea-4ff2-ba2e-563bfd36b1d4"
@@ -2674,6 +2979,11 @@ git-tree-sha1 = "b182207d4af54ac64cbc71797765068fdeff475d"
 uuid = "3d5dd08c-fd9d-11e8-17fa-ed2836048c2f"
 version = "0.21.64"
 
+[[deps.VersionParsing]]
+git-tree-sha1 = "58d6e80b4ee071f5efd07fda82cb9fbe17200868"
+uuid = "81def892-9a0e-5fdd-b105-ffc91e053289"
+version = "1.3.0"
+
 [[deps.VertexSafeGraphs]]
 deps = ["Graphs"]
 git-tree-sha1 = "8351f8d73d7e880bfc042a8b6922684ebeafb35c"
@@ -2685,12 +2995,6 @@ deps = ["BandedMatrices", "CommonSolve", "DiffResults", "DocStringExtensions", "
 git-tree-sha1 = "ea04c9e36926bd52124de505f31e0b78d26c8ac4"
 uuid = "82b139dc-5afc-11e9-35da-9b9bdfd336f3"
 version = "1.13.2"
-
-[[deps.WidthLimitedIO]]
-deps = ["Unicode"]
-git-tree-sha1 = "71142739e695823729a335e9bc124ef41ec1433a"
-uuid = "b8c1c048-cf81-46c6-9da0-18c1d99e41f2"
-version = "1.0.1"
 
 [[deps.WoodburyMatrices]]
 deps = ["LinearAlgebra", "SparseArrays"]
@@ -2848,9 +3152,12 @@ version = "3.5.0+0"
 # ╠═0dfbc50d-e86d-44e7-9627-56a8559feaa3
 # ╟─a906a7ba-3c89-47ea-a27f-5589b3013cd3
 # ╟─3b214fa7-88f6-46dc-a750-00d184b39205
-# ╟─3c621d28-b568-4ece-bac0-a8abde8a83cd
-# ╟─197556d5-198c-479d-becf-4299d924ea58
+# ╠═3c621d28-b568-4ece-bac0-a8abde8a83cd
+# ╠═197556d5-198c-479d-becf-4299d924ea58
+# ╟─b96e4b1c-c2a8-4a1c-b126-42e65e8aeaf0
+# ╠═42fc20b8-cc68-4252-917b-589d246292c8
 # ╠═cd96a29a-cfa3-47f3-a512-41a9be02a162
+# ╠═8c6dd829-988f-43f5-b8d0-47419a2a0a2e
 # ╟─e7f1f471-2870-4301-a995-a2cb69641715
 # ╟─70a861a1-d65c-4d4e-b008-4704543cf906
 # ╟─18cfe6b4-cfc3-4dac-bdeb-7ac0662b05dc
@@ -2866,11 +3173,28 @@ version = "3.5.0+0"
 # ╟─017a440f-6faf-4795-8aa5-6a5c4957f1c6
 # ╟─d812f5e2-27a3-4361-9812-f015bd1f1bd6
 # ╠═5927b7f2-f894-4db9-9eaa-fe29233f1194
+# ╠═d811f86a-2871-4c05-9596-17ae027eddd6
+# ╠═2243d237-c57e-4e77-88bb-1a06c92e3a3e
+# ╟─4deceb97-3249-4222-97db-a138932b15f3
+# ╠═995ae643-c14a-4b82-a1d2-40c363a89cc4
+# ╠═1a0866fa-b883-43ba-8507-3d53ff4172c2
 # ╟─7bb14158-a380-4101-82fc-13b1bd850c0b
 # ╠═800d0e92-a02c-431a-93a0-c3980bc0212a
 # ╠═92342b34-1ab6-4194-8b16-46772d138ded
 # ╟─d4509d2a-45ca-4d53-ba78-6839f0bdf049
+# ╠═f694ef00-5c56-4323-8fe4-b12941c4ab4b
+# ╠═9224eb94-9415-4b87-849a-def11e382ab5
 # ╠═a0512c28-3c45-451e-998a-cf5be1d871ba
+# ╠═30f55940-f223-43ff-b564-b166f2f8b353
+# ╟─d434d5fd-0362-45c6-adff-13ba7ea6d847
+# ╠═9164eabd-e65f-4ed2-b953-b3edd6cb034a
+# ╠═3ebcf10e-f8f1-471b-be6f-0aaedfa2da01
+# ╟─2a85e0d6-239c-4cba-af6e-1f1bcb7f8a57
+# ╟─456d8645-3a17-4ea1-b9ec-6479e51650a5
+# ╠═07215442-8bfa-4c13-b271-659ecdb1de91
+# ╠═cc72a7e0-b106-4607-bc3e-21e00ae29808
+# ╟─d4038b83-1174-4a73-a73d-ff780be1f130
+# ╠═dd66290f-45b6-4947-9e10-3273aa93dd03
 # ╟─8f8efe6e-4a54-44e5-b1b1-6e3a549f7a5e
 # ╟─8f017a97-a47f-4f54-ad87-94808b708366
 # ╟─17d49b00-967e-4425-9460-90921ed09a3c
