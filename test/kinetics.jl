@@ -21,7 +21,7 @@ md"""
 # ╔═╡ 3afa3da7-d14b-43a9-bd43-c0ce0550086f
 begin
 	@unitfactors cm eV μF μA
-	@phconstants c_0
+	@phconstants c_0 h
 end;
 
 # ╔═╡ 1dc9ffb6-02e2-4278-99c8-d1495818256a
@@ -37,6 +37,98 @@ begin
 	const ϕ_pzc = 0.16 * ufac"V"
 	const local_pH = 6.8
 end;
+
+# ╔═╡ 15b52261-ba3e-42ba-96a9-c772626e5496
+const gases = DataFrame(
+	:name => ["H₂O", "CO", "CO₂", "H₂"],
+	:components => ["H2O", "CO", "CO2", "H2"],
+	:symmetrynumber => [2, 1, 2, 2],
+	:geometry => ["nonlinear", "linear", "linear", "linear"],
+	:spin => [0, 0, 0, 0],
+	:energy => [0.0, 0.2701852315, 0.0, 0.0] .* eV,
+	:frequencies => [
+		[103.0, 180.6, 245.1, 1625.9, 3722.8, 3830.3] * h / cm / eV * c_0,
+		[89.8, 127.2, 2145.5] * h / cm / eV * c_0,
+		[24.1, 70.7, 635.8, 640.5, 1312.2, 2361.2] * h / cm / eV * c_0,
+		[3.8, 13.5, 4444.5] * h / cm / eV * c_0
+	],
+
+)
+
+# ╔═╡ b66f7fe9-009d-4287-9d89-a36dbde1e434
+const adsorbates = DataFrame(
+	:name 		 => ["CO₂_t" 	, "COOH_t" 	 , "CO_t"],
+	:energy 	 => [0.657600203, 0.128214079, -0.02145440850567823] .* eV,
+	:frequencies => [
+		[136.85, 183.6, 212.95, 250.7, 306.0, 510.55, 562.25, 1176.05, 1889.85] * h / cm / eV * c_0,
+		[102.25, 172.05, 242.65, 265.55, 303.45, 520.8, 646.8, 794.1500000000001, 1032.6999999999998, 1344.35, 1658.15, 3551.35] * h / cm / eV * c_0,
+		[129.65, 155.55, 189.8, 227.5, 2073.25] * h / cm / eV * c_0
+	],
+	:echem_params => [
+		[-0.000286600929 / (μA/cm^2)^2, 0.0297720125 / (μA/cm^2)],
+		[-9.0295682e-05 / (μA/cm^2)^2, 0.00226896383 / (μA/cm^2)],
+		[-0.000189106972 / (μA/cm^2)^2,-0.00942574086 / (μA/cm^2)],
+	],
+	
+)
+
+# ╔═╡ ea5c99f8-cbd5-4542-ab17-f2582b49e565
+const transition_states = DataFrame(
+	:name => ["COOH-H₂O-e⁻_t"],
+	:energy => [0.95] .* eV,
+	:frequencies => [Float64[]],
+	:echem_params => [[-9.0295682e-05 / (μA/cm^2)^2, 0.00226896383 / (μA/cm^2)]],
+)
+
+# ╔═╡ 29b9eacb-ef85-400d-8301-2e59d541b70f
+const surfaces = DataFrame(
+	:name => ["_t"],
+	:energy => [0.0] .* eV,
+)
+
+# ╔═╡ 7787f977-66fb-4f0f-8ef2-41c78a518933
+const fictious = DataFrame(
+	:name => ["OH⁻", "e⁻"], 
+	:energy => [0.0, 0.0], 
+	:frequencies => [Float64[], Float64[]]
+)
+
+# ╔═╡ ce88f49d-2ea6-40fd-8e21-9fcecc938e02
+const thermo_corrections = let
+	ngases 		= nrow(gases)
+	nadsorbates = nrow(adsorbates)
+	ntransition = nrow(transition_states)
+	nsurfaces 	= nrow(surfaces)
+	nfictious 	= nrow(fictious)
+	ntotal 		= ngases + nadsorbates + ntransition + nsurfaces + nfictious
+	Dict(zip(
+		[gases.name; adsorbates.name; transition_states.name; surfaces.name; fictious.name], zeros(ntotal)
+	))
+end
+
+# ╔═╡ 7d4c60a7-8a5b-47f1-a91e-bb1b2c76c05d
+const energies = let
+	dicts = []
+	for df in [gases, adsorbates, transition_states, fictious]
+		push!(dicts, Dict(name => energy for (; name, energy) in eachrow(df)))
+	end
+	merge(dicts...)
+end
+
+# ╔═╡ 26cf49cc-7a4e-4232-85b2-b370db46378e
+const translation = Dict(
+		"H2_g" => "H₂",
+		"H2O_g" => "H₂O",
+		"CO2_g" => "CO₂",
+		"CO_g" => "CO",
+		"CO2_t" => "CO₂_t",
+		"COOH_t" => "COOH_t",
+		"CO_t" => "CO_t",
+		"COOH-H2O-ele_t" => "COOH-H₂O-e⁻_t",
+		"OH_g" => "OH⁻",
+		"ele_g" => "e⁻",
+		"t" => "_t",
+)
 
 # ╔═╡ ba894fa1-fba8-40db-9459-7ec78462a246
 md"""
@@ -157,12 +249,12 @@ def catmap_kinetic_model(setup_file):
 		energies = convert(Dict{String, Float64}, energies)
 		
 		if isnothing(df)
-			@show specd
 			df = DataFrame(params..., energies...)
 		else
 			push!(df, merge(params, energies))
 		end
 	end
+	rename!(df, translation)
 	df
 end
 
@@ -193,191 +285,124 @@ def get_thermal_correction_ideal_gas(T, frequencies, symmetrynumber, geometry, s
 	"""
 	get_thermal_correction_adsorbate = py"get_thermal_correction_adsorbate"
 	get_thermal_correction_ideal_gas = py"get_thermal_correction_ideal_gas"
-end;
+end
 
-# ╔═╡ f4e3b67b-ee51-4648-b780-c563557e7ca6
-begin
-	bulk_species        = ["H2_g", "CO2_g", "CO_g", "OH_g", "H2O_g", "ele_g"]
-	surface_species     = ["CO2_t", "COOH_t", "CO_t"]
-	transition_state    = ["COOH-H2O-ele_t"]
-end;
+# ╔═╡ 0b3c9e82-c87b-4f3c-b504-af10d355c0e2
+function add_simple_electrochem_corrections!(electro_corrections, ϕ_we, ϕ)
+	β = 0.50 # hack
+	electro_corrections["e⁻"] -= (ϕ_we - ϕ) * eV
+	# Frumking correct: ϕ_we - u[iϕ]
+	electro_corrections["COOH-H₂O-e⁻_t"] += (-(ϕ_we - ϕ) + β * (ϕ_we - ϕ - ϕ_pzc)) * eV
+	nothing
+end
 
-# ╔═╡ 59a442ee-3b6c-464b-8948-dbfe8e159774
+# ╔═╡ dc768d05-de5a-4c44-b30a-7aea60fb1926
+function add_hbond_corrections!(electro_corrections)
+	## hbond_electrochemical
+	electro_corrections["COOH_t"] += -0.25 * eV
+	electro_corrections["CO₂_t"] += 0.0 * eV
+	electro_corrections["CO_t"] += -0.1 * eV
+end
+
+# ╔═╡ 119b4542-41e6-49fc-a281-a0c2c1b5981f
 md"""
-#### Formation Energies at 0 K from DFT calculations
+The free energies $ΔG_f$ of the surface species are corrected according to the (excess) surface charge density $σ$ by a fitted quadratic model:
+
+$ΔG_f(σ) = a_σ~σ + b_σ~σ^2$
 """
 
-# ╔═╡ fdbc2d16-b26a-4df2-b6e9-a6fa1a825be2
-E_f = Dict( 
-	"CO2_g" => 0.0 * eV,
-	"CO2_t" => 0.657600203 * eV,
-	"COOH_t" => 0.128214079 * eV,
-	"COOH-H2O-ele_t" => 0.95 * eV,
-	"CO_t" => -0.02145440850567823 * eV,
-	"CO_g" => 0.2701852315 * eV,
-	"ele_g" => 0.0 * eV,
-	"OH_g" => 0.0 * eV,
-	"H2O_g" => 0.0 * eV,
-	"H2_g" => 0.0 * eV
-);
+# ╔═╡ 36a30e9a-6fce-40d3-a36a-aaef3d8b7f2a
+function add_hbond_surface_charge_corrections!(electro_corrections, σ)
+	## hbond_surface_charge_density
+	for species in [adsorbates, transition_states]
+		for (; name, echem_params) in eachrow(species)
+			electro_corrections[name] += echem_params' * [σ^2, σ] * eV
+		end
+	end
+end
 
-# ╔═╡ 3b8df1df-1054-417a-b242-4046c99f2d02
-md"""
-#### Vibrational Frequencies from DFT Calculations
-"""
+# ╔═╡ 5ccf3fa5-df4d-47e5-a56d-82ba4b099b92
+function add_pH_correction!(electro_corrections, thermo_corrections, local_pH)
+	## _get_echem_corrections
+	gases_by_name = groupby(gases, :name)
+	G_H2O       = energies["H₂O"] + thermo_corrections["H₂O"]
+	G_H2        = energies["H₂"] + thermo_corrections["H₂"]
+	G_H         = 0.5 * G_H2 - .0592 * local_pH / 298.14 * T * eV
+	G_OH        = G_H2O - G_H
+	electro_corrections["OH⁻"] += G_OH
+end
 
-# ╔═╡ c2640ab8-8926-4872-abdf-adc509f56d59
-frequencies = Dict(
-	        "CO2_g" => [24.1, 70.7, 635.8, 640.5, 1312.2, 2361.2] * ufac"h / cm / eV" * c_0,
-	        "CO2_t" => [136.85, 183.6, 212.95, 250.7, 306.0, 510.55, 562.25, 1176.05, 1889.85] * ufac"h / cm / eV" * c_0,
-	        "COOH_t" => [102.25, 172.05, 242.65, 265.55, 303.45, 520.8, 646.8, 794.1500000000001, 1032.6999999999998, 1344.35, 1658.15, 3551.35] * ufac"h  / cm / eV" * c_0,
-	        "COOH-H2O-ele_t" => [],
-	        "CO_t" => [129.65, 155.55, 189.8, 227.5, 2073.25] * ufac"h / cm / eV" * c_0,
-	        "CO_g" => [89.8, 127.2, 2145.5] * ufac"h / cm / eV" * c_0,
-	        "ele_g" => [],
-	        "OH_g" => [],
-	        "H2O_g" => [103.0, 180.6, 245.1, 1625.9, 3722.8, 3830.3] * ufac"h / cm / eV" * c_0,
-	        "H2_g" => [3.8, 13.5, 4444.5] * ufac"h / cm / eV" * c_0
-);
-
-# ╔═╡ e07cb9fb-f59c-43f1-bcb1-fedc0e1d90f9
-md"""
-#### Thermodynamical and Electrochemical Corrections
-
-The energy calculations hold at 0 K and no excess surface charges. Therefore the energy terms have to be corrected according to the system parameters.
-"""
-
-# ╔═╡ 15924d1b-07b9-48b7-bc0f-b2836f391a1d
-md"""
-##### Correction of Bulk Species
-"""
-
-# ╔═╡ 2758f368-ea18-473d-bfa4-4d65a3c94653
-ideal_gas_params = Dict(
-	        "H2O_g" => (2, "nonlinear", 0, "H2O"),
-	        "CO_g" => (1, "linear", 0, "CO"),
-	        "CO2_g" => (2, "linear", 0, "CO2"),
-	        "H2_g" => (2, "linear", 0, "H2")
-);
-
-# ╔═╡ 42b0eb6d-21a2-4b88-b09a-42bfc0289c51
-### ideal gases
+# ╔═╡ e257853d-2bb2-42f0-b1bd-eedb0736807a
 function add_ideal_gas_correction!(thermo_corrections)
-	for sp in bulk_species
-		if sp ∉ ["OH_g", "ele_g"]
-			thermo_corrections[sp] += get_thermal_correction_ideal_gas(T, frequencies[sp], ideal_gas_params[sp]...) * eV
+	for (; name,frequencies,symmetrynumber,geometry,spin,components) in eachrow(gases)
+		if name ∉ ["OH⁻", "e⁻"]
+			thermo_corrections[name] += get_thermal_correction_ideal_gas(
+				T, frequencies, symmetrynumber, geometry, spin, components
+			) * eV
 		end
 	end
 	nothing
 end
 
-# ╔═╡ befc5723-14b7-4047-ba88-c89bd4815a62
-md"""
-##### Correction of Adsorbates & BEB scaling of the Transition State
-"""
-
-# ╔═╡ 49808249-8a31-475b-9a04-2630545bf4d4
-### harmonic adsorbates
+# ╔═╡ cea31912-c4ff-424f-9000-c537dc8faea4
 function add_harmonic_adsorbate_correction!(thermo_corrections)
-	for sp ∈ surface_species
-		thermo_corrections[sp] += get_thermal_correction_adsorbate(T, frequencies[sp]) * eV
+	for (; name, frequencies) in eachrow(adsorbates)
+		thermo_corrections[name] += get_thermal_correction_adsorbate(T, frequencies) * eV
 		#println("$sp: $(E_f[sp] / eV)")
 	end
-	thermo_corrections["COOH-H2O-ele_t"] += (thermo_corrections["COOH_t"] + thermo_corrections["CO_t"]) / 2;
+	thermo_corrections["COOH-H₂O-e⁻_t"] += (thermo_corrections["COOH_t"] + thermo_corrections["CO_t"]) / 2
 	nothing
 end
 
-# ╔═╡ 0bacc17c-b53b-41ec-8808-1efb7d413147
+# ╔═╡ b69719cc-9378-4eb5-a6e4-56bd4f250cc5
 begin
-	thermo_corrections = Dict(zip(keys(E_f), zeros(length(E_f))));
+	for sp in keys(thermo_corrections)
+		thermo_corrections[sp] = 0.0
+	end
 	add_ideal_gas_correction!(thermo_corrections)
 	add_harmonic_adsorbate_correction!(thermo_corrections)
-end;
+	
+	function compute_energies_explicit!(Gf, σ, ϕ_we, ϕ, local_pH)
 
-# ╔═╡ 58bd5959-c4c9-4351-8852-063743b7a937
-md"""
-##### Electrochemical Corrections
-
-The free energies $ΔG_f$ of the surface species are corrected according to the (excess) surface charge density $σ$ by a fitted quadratic model:
-
-$ΔG_f(σ) = a_σ~σ + b_σ~σ^2$
-
-The surface charging relation $σ = σ(U)$ is given by the Robin boundary condition
-
-$σ(U) = C_{gap} (ϕ_{we} - ϕ_{pzc} - ϕ^\ddagger)$
-
-where the gap capacitance between the working electrode and the reaction plane ($\ddagger$) is given by $C_{gap} = 20~μF/cm^2$. The potential of zero current is measured to be $ϕ_{pzc} = 0.16~V$.
-"""
-
-# ╔═╡ 18966e29-62c4-4e0e-8b96-47ac0e026dc2
-electro_correction_params = Dict(
-	"CO2_t"  => [-0.000286600929 / (μA/cm^2)^2, 0.0297720125 / (μA/cm^2)],
-	"COOH_t" => [-9.0295682e-05 / (μA/cm^2)^2, 0.00226896383 / (μA/cm^2)],
-	"CO_t"   => [-0.000189106972 / (μA/cm^2)^2,-0.00942574086 / (μA/cm^2)],
-	"COOH-H2O-ele_t" => [-9.0295682e-05 / (μA/cm^2)^2, 0.00226896383 / (μA/cm^2)],
-);
+		add_simple_electrochem_corrections!(Gf, ϕ_we, ϕ)
+		add_hbond_corrections!(Gf)
+		add_hbond_surface_charge_corrections!(Gf, σ)
+		add_pH_correction!(Gf, thermo_corrections, local_pH)
+	
+		for species in [gases, adsorbates, transition_states, surfaces, fictious]
+			for (; name, energy) in eachrow(species)
+				Gf[name] += energy + thermo_corrections[name]
+			end
+		end	
+		nothing
+	end
+end
 
 # ╔═╡ 77b9a080-7a3b-4835-9d69-afa13eff3757
 md"""
 #### Explicit Rate Calculations
 """
 
-# ╔═╡ 9c02ef80-80ca-4b33-84f6-8cba62527539
-function compute_energies_explicit!(G_f, σ, ϕ_we, ϕ, local_pH)
-	β = 0.5 # hack
-	
-	
-	
-	# compute corrections due to surface charge densities
-	electro_corrections = Dict(zip(keys(E_f), zeros(Float64, length(E_f))))
-
-	## simple_electrochemical
-	#electro_corrections["ele_g"] -= (ϕ_we - (ϕ_we - u[iϕ])) * eV
-	electro_corrections["ele_g"] -= (ϕ_we - ϕ) * eV
-	#electro_corrections["COOH-H2O-ele_t"] += (-u[iϕ] + 0.5 * (u[iϕ] - ϕ_pzc)) * eV
-	# Frumking correct: ϕ_we - u[iϕ]
-	electro_corrections["COOH-H2O-ele_t"] += (-(ϕ_we - ϕ) + β * (ϕ_we - ϕ - ϕ_pzc)) * eV
-
-
-	## hbond_electrochemical
-	electro_corrections["COOH_t"] += -0.25 * eV
-	electro_corrections["CO2_t"] += 0.0 * eV
-	electro_corrections["CO_t"] += -0.1 * eV
-
-	## hbond_surface_charge_density
-	for sp in [surface_species; transition_state]
-		electro_corrections[sp] += electro_correction_params[sp]' * [σ^2, σ] * eV
-	end
-
-	## _get_echem_corrections
-	G_H2O       = E_f["H2O_g"] + thermo_corrections["H2O_g"]
-	G_H2        = E_f["H2_g"] + thermo_corrections["H2_g"]
-	G_H         = 0.5 * G_H2 - .0592 * local_pH / 298.14 * T * eV
-	G_OH        = G_H2O - G_H
-	
-	for sp in [bulk_species; surface_species; transition_state]
-		G_f[sp] += E_f[sp] + thermo_corrections[sp] + electro_corrections[sp]
-	end
-	G_f["OH_g"] += G_OH
-	nothing
-end;
-
 # ╔═╡ 90d20692-ce49-419e-8377-9e2b72d176a6
 explicit_df = let
+	Gf = Dict(zip(
+			keys(thermo_corrections), zeros(Float64, length(thermo_corrections))
+		))
 	ns = names(catmap_df)
 	df = DataFrame(fill(Float64[], (length(ns),)), ns)
 	
 	for ϕ in range(ϕ_we, 0.0, 11)
-		G_f = Dict(zip([bulk_species; surface_species; transition_state], zeros(length(E_f))))
+		for k in keys(Gf)
+			Gf[k] = 0.0
+		end
 		σ = (ϕ_we - ϕ - ϕ_pzc) * C_gap
 		params = Dict("ϕ" => ϕ, "ϕ_we" => ϕ_we, "σ" => σ)
-		compute_energies_explicit!(G_f, σ, ϕ_we, ϕ, local_pH)
-		G_f["g"] = 0.0
-		G_f["t"] = 0.0
-		for (k, v) in pairs(G_f)
-			G_f[k] = v / eV
+		compute_energies_explicit!(Gf, σ, ϕ_we, ϕ, local_pH)
+		Gf["g"] = 0.0
+		for (k, v) in pairs(Gf)
+			Gf[k] = v / eV
 		end
-		push!(df, merge(params, G_f))
+		push!(df, merge(params, Gf))
 	end
 	df
 end
@@ -850,29 +875,30 @@ version = "17.4.0+0"
 # ╠═3afa3da7-d14b-43a9-bd43-c0ce0550086f
 # ╟─1dc9ffb6-02e2-4278-99c8-d1495818256a
 # ╠═b24253cc-e044-48ad-8d1c-f12a6765c398
+# ╟─15b52261-ba3e-42ba-96a9-c772626e5496
+# ╟─b66f7fe9-009d-4287-9d89-a36dbde1e434
+# ╟─ea5c99f8-cbd5-4542-ab17-f2582b49e565
+# ╟─29b9eacb-ef85-400d-8301-2e59d541b70f
+# ╟─7787f977-66fb-4f0f-8ef2-41c78a518933
+# ╠═ce88f49d-2ea6-40fd-8e21-9fcecc938e02
+# ╠═7d4c60a7-8a5b-47f1-a91e-bb1b2c76c05d
+# ╟─26cf49cc-7a4e-4232-85b2-b370db46378e
 # ╟─ba894fa1-fba8-40db-9459-7ec78462a246
 # ╠═1f020e47-e4cb-4202-80f7-39421e4ce471
 # ╠═9d4a2505-9c24-4ed2-bf02-f6598f296f11
 # ╟─6120ec04-80c8-423c-a92a-44583ba9bac7
 # ╟─8a87380d-20e6-4c27-950b-25003b98bf30
-# ╠═30c7d656-e197-495e-bd71-9c71214d1857
-# ╠═f4e3b67b-ee51-4648-b780-c563557e7ca6
-# ╟─59a442ee-3b6c-464b-8948-dbfe8e159774
-# ╠═fdbc2d16-b26a-4df2-b6e9-a6fa1a825be2
-# ╟─3b8df1df-1054-417a-b242-4046c99f2d02
-# ╠═c2640ab8-8926-4872-abdf-adc509f56d59
-# ╟─e07cb9fb-f59c-43f1-bcb1-fedc0e1d90f9
-# ╟─15924d1b-07b9-48b7-bc0f-b2836f391a1d
-# ╠═2758f368-ea18-473d-bfa4-4d65a3c94653
-# ╠═42b0eb6d-21a2-4b88-b09a-42bfc0289c51
-# ╟─befc5723-14b7-4047-ba88-c89bd4815a62
-# ╠═49808249-8a31-475b-9a04-2630545bf4d4
-# ╠═0bacc17c-b53b-41ec-8808-1efb7d413147
-# ╟─58bd5959-c4c9-4351-8852-063743b7a937
-# ╠═18966e29-62c4-4e0e-8b96-47ac0e026dc2
+# ╟─30c7d656-e197-495e-bd71-9c71214d1857
+# ╠═0b3c9e82-c87b-4f3c-b504-af10d355c0e2
+# ╠═dc768d05-de5a-4c44-b30a-7aea60fb1926
+# ╟─119b4542-41e6-49fc-a281-a0c2c1b5981f
+# ╠═36a30e9a-6fce-40d3-a36a-aaef3d8b7f2a
+# ╠═5ccf3fa5-df4d-47e5-a56d-82ba4b099b92
+# ╠═e257853d-2bb2-42f0-b1bd-eedb0736807a
+# ╠═cea31912-c4ff-424f-9000-c537dc8faea4
+# ╠═b69719cc-9378-4eb5-a6e4-56bd4f250cc5
 # ╟─77b9a080-7a3b-4835-9d69-afa13eff3757
-# ╠═9c02ef80-80ca-4b33-84f6-8cba62527539
-# ╟─90d20692-ce49-419e-8377-9e2b72d176a6
+# ╠═90d20692-ce49-419e-8377-9e2b72d176a6
 # ╠═3215092e-a913-4c73-ac01-fc725beccb05
 # ╟─00000000-0000-0000-0000-000000000001
 # ╟─00000000-0000-0000-0000-000000000002
