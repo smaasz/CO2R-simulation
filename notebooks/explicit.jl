@@ -356,7 +356,7 @@ Only the third reaction is assumed to pass through an activated transition state
 # ╔═╡ d811f86a-2871-4c05-9596-17ae027eddd6
 function add_simple_electrochem_corrections!(electro_corrections, ϕ_we, ϕ)
 	β = 0.59 # hack
-	electro_corrections["e⁻"] -= (ϕ_we - ϕ) * eV
+	electro_corrections["e⁻"] += -(ϕ_we - ϕ) * eV
 	# Frumking correct: ϕ_we - u[iϕ]
 	electro_corrections["COOH-H₂O-e⁻_t"] += (-(ϕ_we - ϕ) + β * (ϕ_we - ϕ - ϕ_pzc)) * eV
 	nothing
@@ -420,7 +420,7 @@ celldata = ElectrolyteData(;nc    = nc,
 						  	D     = bulk[!, :D],
 						  	T     = T,
 						  	eneutral=false,
-						  	κ     = bulk[!, :κ],
+						  	#κ     = bulk[!, :κ],
                             c_bulk= bulk[!, :c_bulk],
 						  	Γ_we  = Γ_we,
 						  	Γ_bulk= Γ_bulk,
@@ -579,7 +579,7 @@ begin
 							 
 	
 	    scalarplot!(vis,
-	                volts,
+	                volts .- 0.059*pH,
 	                curr(result.j_bulk, iohminus)[result.voltages .< -0.6] .* cm^2/mA;
 	                linestyle = :dash,
 	                label = "OH⁻, bulk",
@@ -3300,9 +3300,9 @@ version = "3.5.0+0"
 # ╟─2a85e0d6-239c-4cba-af6e-1f1bcb7f8a57
 # ╟─456d8645-3a17-4ea1-b9ec-6479e51650a5
 # ╟─07215442-8bfa-4c13-b271-659ecdb1de91
-# ╟─cc72a7e0-b106-4607-bc3e-21e00ae29808
+# ╠═cc72a7e0-b106-4607-bc3e-21e00ae29808
 # ╟─d4038b83-1174-4a73-a73d-ff780be1f130
-# ╟─dd66290f-45b6-4947-9e10-3273aa93dd03
+# ╠═dd66290f-45b6-4947-9e10-3273aa93dd03
 # ╟─8f8efe6e-4a54-44e5-b1b1-6e3a549f7a5e
 # ╟─8f017a97-a47f-4f54-ad87-94808b708366
 # ╟─17d49b00-967e-4425-9460-90921ed09a3c
